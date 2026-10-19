@@ -174,7 +174,8 @@ def process_event(event_id, task_id, kind, created_at, title, status, assignee,
             return
         _notify_cache[_cache_key] = _now
         emoji = KIND_EMOJI.get(kind, "📋")
-        text = "%s <b>Kanban: %s</b>\n%s\nTask: %s" % (emoji, kind.upper(), title or task_id, task_id)
+        who = " (@%s)" % assignee if assignee and assignee != "none" else ""
+        text = "%s <b>Kanban: %s</b>%s\n%s\nTask: %s" % (emoji, kind.upper(), who, title or task_id, task_id)
         if send_telegram(bot_token, chat_id, text):
             log("telegram notified %s for %s" % (kind, task_id))
         else:
