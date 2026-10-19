@@ -62,6 +62,36 @@ fi
 
 log "=== watch run start ==="
 
+# ── Step 1: Tunnel push inbox ──
+# The box's kanban-events-daemon POSTs events through the reverse SSH tunnel
+# to the local listener, which writes them as JSON to kanban-push/.
+# Process each: log with KANBAN prefix, then archive to .processed/.
+PUSH_DIR="$HOME/workspace/inbox/kanban-push"
+PROCESSED_DIR="$PUSH_DIR/.processed"
+mkdir -p "$PROCESSED_DIR"
+
+push_count=0
+for pf in "$PUSH_DIR"/*.json; do
+  [ -f "$pf" ] || continue
+  fname=$(basename "$pf")
+  summary=$(python3 -c "
+import json
+try:
+    with open('$pf') as f:
+        d = json.load(f)
+    kind = d.get('kind', '?')
+    title = d.get('title', d.get('task_id', '?'))
+    print(f'{kind} — {title}')
+except Exception as e:
+    print(f'unparseable ({e})')
+" 2>/dev/null)
+  log "KANBAN push: $fname: $summary"
+  mv "$pf" "$PROCESSED_DIR/$fname"
+  push_count=$((push_count + 1))
+done
+[ "$push_count" -gt 0 ] && log "kanban-push: processed $push_count file(s)"
+
+# ── Step 2: Agent inbox ──
 # List request files on the box
 FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep -v "Warning:" || true)
 
