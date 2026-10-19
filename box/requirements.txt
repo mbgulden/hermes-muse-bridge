@@ -1,0 +1,6 @@
+# kanban-events-daemon.py uses Python stdlib only.
+# No pip packages required.
+#
+# Optional: PyYAML for full YAML config parsing.
+# Without it, the built-in minimal parser handles config.example.yaml.
+# pyyaml>=6.0
