@@ -1,0 +1,59 @@
+# hermes-muse-bridge configuration
+# Copy to config.yaml and fill in your values. Never commit config.yaml.
+
+# ── Transport ──
+# Options: tailscale-ssh, direct-ssh, localhost
+transport: tailscale-ssh
+
+# ── Hermes box ──
+box:
+  # Hostname or IP of the Hermes box.
+  # - tailscale-ssh: tailnet IP (e.g. 100.83.32.92) or MagicDNS name
+  # - direct-ssh: LAN IP, public IP, or hostname
+  # - localhost: ignored (uses local paths)
+  host: "100.83.32.92"
+  user: "ubuntu"
+  # Path to the Hermes home directory on the box
+  hermes_home: "/home/ubuntu/.hermes"
+  # SSH private key (optional — defaults to ~/.ssh/id_ed25519)
+  # ssh_key: "~/.ssh/id_ed25519"
+  # Extra SSH options (e.g. ProxyCommand for Tailscale tunnel proxy)
+  # ssh_options:
+  #   - "ProxyCommand=python3 ~/workspace/bin/tsproxy.py %h %p"
+
+# ── Muse VM ──
+muse_vm:
+  # Local port for the HTTP listener
+  listener_port: 8899
+  # Remote port on the box for the reverse tunnel (box localhost:<port> → VM listener)
+  tunnel_remote_port: 18989
+  # Where the watcher cron runs (Muse.ai cron interval)
+  watch_interval: "1m"
+
+# ── Kanban ──
+kanban:
+  # The assignee value Muse claims tasks with. Must match what you use
+  # in `hermes kanban create --assignee <value>`.
+  assignee: "muse"
+  # Max tasks claimed per watcher run
+  max_claims_per_run: 5
+  # Max concurrent subagents working tasks
+  max_concurrent_agents: 3
+  # Minutes before a claimed-but-incomplete task is retried
+  retry_grace_minutes: 30
+  # Failures before a task is marked blocked
+  max_retries: 3
+
+# ── Telegram notifications (optional) ──
+# If omitted, kanban event notifications are disabled.
+telegram:
+  # Read from this file on the box (never put the token in config.yaml)
+  # The file should define TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+  env_file: "~/.hermes/profiles/notifications/.env"
+  # Event kinds that trigger a notification
+  notify_kinds:
+    - completed
+    - blocked
+    - crashed
+    - failed
+    - gave_up
