@@ -22,6 +22,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$REPO_DIR/config.yaml"
 DRY_RUN=0
+VERSION="$(cat "$REPO_DIR/VERSION" 2>/dev/null || echo "unknown")"
 
 if [ "${1:-}" = "--help" ]; then
   sed -n '2,/^set -euo/p' "$0" | sed 's/^# //; s/^#//'
@@ -52,7 +53,7 @@ ask() { # $1=prompt, $2=default
 
 # ── Step 1: Gather config ──
 
-echo "=== hermes-muse-bridge installer ==="
+echo "=== hermes-muse-bridge installer (v$VERSION) ==="
 echo ""
 
 if [ -f "$CONFIG_FILE" ] && [ "$DRY_RUN" = "0" ]; then
@@ -294,8 +295,12 @@ fi
 echo ""
 echo "=== Verification ==="
 if [ "$DRY_RUN" = "0" ]; then
-  echo "Health check:"
-  curl -s --max-time 10 http://127.0.0.1:8899/health/detailed 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "  (listener not responding yet — check ~/workspace/inbox/listener.log)"
+  if [ -x "$REPO_DIR/verify.sh" ]; then
+    "$REPO_DIR/verify.sh"
+  else
+    echo "Health check:"
+    curl -s --max-time 10 http://127.0.0.1:8899/health/detailed 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "  (listener not responding yet — check ~/workspace/inbox/listener.log)"
+  fi
   echo ""
   echo "Test with a kanban task:"
   echo "  On the box: hermes kanban create \"Test task\" --assignee $ASSIGNEE"
@@ -304,5 +309,24 @@ else
   echo "  [dry-run] skip verification"
 fi
 
+# ── Step 7: Watcher cron (manual — shell cannot create Muse crons) ──
+
+echo ""
+echo "================================================================"
+echo "  NEXT STEP: Set up the watcher cron (required)"
+echo "================================================================"
+echo ""
+echo "Muse crons cannot be created from a shell script."
+echo "Paste this to your Muse agent:"
+echo ""
+echo "  Create a cron job that runs every 1 minute."
+echo "  Use the task body from this file:"
+echo "    $REPO_DIR/muse-vm/cron-body.md"
+echo ""
+if [ -f "$REPO_DIR/muse-vm/cron-body.md" ]; then
+  echo "  (cron-body.md exists — hand it to your Muse agent)"
+else
+  echo "  WARNING: muse-vm/cron-body.md not found — check your repo checkout"
+fi
 echo ""
 echo "Done! See TROUBLESHOOTING.md if anything isn't working."
