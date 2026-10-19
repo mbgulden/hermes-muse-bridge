@@ -8,10 +8,10 @@ transport: tailscale-ssh
 # ── Hermes box ──
 box:
   # Hostname or IP of the Hermes box.
-  # - tailscale-ssh: tailnet IP (e.g. 100.83.32.92) or MagicDNS name
+  # - tailscale-ssh: tailnet IP (e.g. 100.x.y.z) or MagicDNS name
   # - direct-ssh: LAN IP, public IP, or hostname
   # - localhost: ignored (uses local paths)
-  host: "100.83.32.92"
+  host: "YOUR-BOX-HOST"
   user: "ubuntu"
   # Path to the Hermes home directory on the box
   hermes_home: "/home/ubuntu/.hermes"
