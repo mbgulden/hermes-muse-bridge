@@ -20,7 +20,7 @@
 ## Step 1: Clone
 
 ```bash
-git clone https://github.com/YOUR-USER/hermes-muse-bridge.git
+git clone https://github.com/mbgulden/hermes-muse-bridge.git
 cd hermes-muse-bridge
 ```
 
@@ -45,7 +45,7 @@ It then:
 - Installs `muse-vm/` scripts on the Muse VM
 - Starts the listener and tunnel
 - Deploys skills to `~/workspace/custom-skills/`
-- Creates the Muse cron job for the watcher
+- Prints the watcher cron setup instructions (paste to your Muse agent — shell scripts cannot create Muse crons)
 
 ## Step 3: Verify
 
@@ -123,8 +123,11 @@ nohup python3 ~/workspace/bin/inbox-listener.py >/dev/null 2>&1 &
 # 3. Start the tunnel (adjust ports for your transport)
 nohup ~/workspace/bin/tunnel.sh >/dev/null 2>&1 &
 
-# 4. Set up the watcher cron (every 1 minute) via Muse's cron system
-# See the Muse docs for cron setup
+# 4. Set up the watcher cron (every 1 minute)
+# Muse crons cannot be created from shell — ask your Muse agent:
+# "Create a cron job running every minute using the task body in
+#  hermes-muse-bridge/muse-vm/cron-body.md"
+# See muse-vm/cron-body.md for the exact text to use.
 ```
 
 ### Skills
