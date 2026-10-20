@@ -15,8 +15,8 @@ WHY A DAEMON (not a gateway hook):
   SQLite directly). A gateway hook can NEVER fire on kanban task events.
 - SQLite triggers have no file I/O, so can't write JSON or POST.
 
-Telegram config (from autobot profile .env, never hardcoded):
-- TELEGRAM_BOT_TOKEN, TELEGRAM_HOME_CHAT_ID from ~/.hermes/profiles/autobot/.env
+Telegram config (from streamops profile .env, never hardcoded):
+- TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS from ~/.hermes/profiles/streamops/.env
 
 Run at boot via cron @reboot. Single-instance via .pid file.
 Logs to ~/.hermes/logs/kanban-events-daemon.log.
@@ -36,11 +36,10 @@ OUT_DIR = os.path.join(HERMES_HOME, "jimmy-inbox", "kanban-events")
 WATERMARK_FILE = os.path.join(OUT_DIR, ".watermark")
 PID_FILE = os.path.join(OUT_DIR, ".pid")
 LOG_FILE = os.path.join(HERMES_HOME, "logs", "kanban-events-daemon.log")
-AUTOBOT_ENV = os.path.join(HERMES_HOME, "profiles", "autobot", ".env")
+STREAMOPS_ENV = os.path.join(HERMES_HOME, "profiles", "streamops", ".env")
 POLL_SECONDS = 2
 
 # Jimmy's listener via reverse SSH tunnel (port rotates; see jimmy-listener-port)
-# The tunnel script publishes the live port here; fallback to pool default.
 JIMMY_PORT_FILE = "/home/ubuntu/.hermes/jimmy-listener-port"
 JIMMY_PORT_DEFAULT = 18991
 
@@ -107,10 +106,10 @@ def open_db():
 
 
 def load_telegram_config():
-    """Read bot token and chat ID from autobot profile .env. Never logs the token."""
+    """Read bot token and chat ID from streamops profile .env. Never logs the token."""
     cfg = {}
     try:
-        with open(AUTOBOT_ENV) as f:
+        with open(STREAMOPS_ENV) as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -118,7 +117,9 @@ def load_telegram_config():
                     cfg[k.strip()] = v.strip().strip('"').strip("'")
     except Exception as e:
         log("telegram env load failed: %s" % e)
-    return cfg.get("TELEGRAM_BOT_TOKEN", ""), cfg.get("TELEGRAM_HOME_CHAT_ID", "")
+    # 1:1 mode: send to the allowlisted user directly
+    chat_id = cfg.get("TELEGRAM_OPS_CHAT_ID", "") or cfg.get("TELEGRAM_ALLOWED_USERS", "").split(",")[0]
+    return cfg.get("TELEGRAM_BOT_TOKEN", ""), chat_id
 
 
 def send_telegram(bot_token, chat_id, text):
