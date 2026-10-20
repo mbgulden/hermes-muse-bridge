@@ -5,7 +5,8 @@
 #   1. Checks tunnel-push inbox (~/workspace/inbox/kanban-push/) for instant events
 #   2. Checks <hermes_home>/muse-inbox/requests/ on the box for agent requests
 #   3. Polls kanban.db task_events as fallback (catches tunnel misses)
-#   4. Claims tasks assigned to $BRIDGE_ASSIGNEE and prepares them for subagents
+#   4. Claims tasks assigned to $BRIDGE_ASSIGNEE and prepares them for subagents;
+#      tasks in 'review' status are briefed WITHOUT claiming (see worker section)
 #
 # Transport modes (BRIDGE_TRANSPORT):
 #   tailscale-ssh, direct-ssh: use SSH via $BRIDGE_SSH_CMD to reach the box
@@ -91,6 +92,19 @@ except Exception as e:
 done
 [ "$push_count" -gt 0 ] && log "kanban-push: processed $push_count file(s)"
 
+# ── SSH wall probe: if the SSH transport hits an interactive re-auth wall
+# (e.g. the Tailscale SSH "check" action), every remote step below would
+# mis-parse the wall message as data and abort mid-run under set -o pipefail.
+# Detect it once, log the login URL, and skip remote steps this run. The
+# local tunnel-push inbox (Step 1) already ran above. Transports that never
+# print a login URL (direct-ssh, localhost) make this a no-op.
+WALL_URL=$($MWH "true" 2>/dev/null | grep -o 'https://login\.tailscale\.com/a/[A-Za-z0-9]*' | head -1 || true)
+if [ -n "$WALL_URL" ]; then
+  log "SSH wall up — skipping remote steps (inbox, kanban tail, worker). Re-auth required: $WALL_URL"
+  log "=== watch run end (wall) ==="
+  exit 0
+fi
+
 # ── Step 2: Agent inbox ──
 # List request files on the box
 FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep -v "Warning:" || true)
@@ -113,8 +127,12 @@ for f in $FILES; do
 
   log "processing $id"
 
-  # Download the request
-  B64=$($MWH "base64 -w0 '$f'" 2>/dev/null | grep -v "Warning:" | tail -1)
+  # Download the request (skip if the file vanished since the listing — agent may have withdrawn it)
+  B64=$($MWH "base64 -w0 '$f'" 2>/dev/null | grep -v "Warning:" | tail -1 || true)
+  if [ -z "$B64" ]; then
+    log "skip $id (request file vanished before download)"
+    continue
+  fi
   echo "$B64" | base64 -d > "$LOCAL_WORK/${id}.md"
 
   # Parse frontmatter
@@ -273,6 +291,15 @@ for brief in "$LOCAL_WORK"/muse-task-*.md; do
     continue  # still within grace period
   fi
 
+  # Review tasks are never claimed, re-queued, or auto-blocked: if a stale
+  # review brief lingers, drop the brief and leave the task in review.
+  TASK_STATUS=$($MWH "python3 -c \"import sqlite3; db=sqlite3.connect('$KANBAN_DB'); r=db.execute('SELECT status FROM tasks WHERE id=?', ('$tid',)).fetchone(); print(r[0] if r else '')\"" 2>/dev/null | grep -v "Warning:" | tail -1)
+  if [ "$TASK_STATUS" = "review" ]; then
+    log "kanban-worker: $tid is a review task — dropping stale brief, task stays in review"
+    rm -f "$brief"
+    continue
+  fi
+
   log "kanban-worker: task $tid has no .done after ${brief_age}s — treating as failed"
   $MWH "python3 << 'PYEOF'
 import sqlite3
@@ -299,15 +326,25 @@ done
 # ── Muse as kanban worker ──
 # Claim tasks assigned to 'muse' and prepare them for subagent execution.
 # The cron worker (not this script) spawns subagents to do the actual work.
-# This section: find → claim → write brief. Max 5 claims per run.
+# This section: find → claim → write brief. Max 5 per run.
 # Tasks are claimed in priority order (urgent first).
+#
+# Two gates on the query:
+#   * Parent gate: a task whose parent is not yet 'done' is skipped. The
+#     kanban DB's terminal status is 'done' — an earlier version gated on
+#     'completed', which never matches, so every task WITH a parent was
+#     silently skipped forever.
+#   * Review tasks: tasks in 'review' status are included, but briefed
+#     WITHOUT claiming — `hermes kanban claim` refuses review tasks by
+#     design. The reviewer verifies the work and resolves the task
+#     directly (complete to approve, request-changes to send back).
 
 MUSE_TASKS_JSON=$($MWH "python3 -c \"
 import sqlite3, json
 db = sqlite3.connect('$KANBAN_DB')
 db.row_factory = sqlite3.Row
 rows = []
-for r in db.execute(\\\"SELECT id, title, body, status, priority FROM tasks WHERE assignee='${BRIDGE_ASSIGNEE:-muse}' AND status IN ('todo', 'ready') ORDER BY priority DESC, created_at ASC LIMIT 5\\\"):
+for r in db.execute(\\\"SELECT id, title, body, status, priority FROM tasks WHERE assignee='${BRIDGE_ASSIGNEE:-muse}' AND status IN ('todo', 'ready', 'review') AND NOT EXISTS (SELECT 1 FROM task_links tl JOIN tasks p ON p.id = tl.parent_id WHERE tl.child_id = tasks.id AND p.status != 'done') ORDER BY priority DESC, created_at ASC LIMIT 5\\\"):
     rows.append(dict(r))
 print(json.dumps(rows))
 \"" 2>/dev/null | grep -v "Warning:" | tail -1)
@@ -339,6 +376,27 @@ with open(os.path.join(LOCAL_WORK_DIR, "muse-tasks.json")) as f:
 for t in tasks:
     tid = t["id"]
     title = t.get("title", "?")
+    if t.get("status") == "review":
+        # Review task: do NOT claim (the CLI refuses claims on review tasks).
+        # Write a REVIEW brief; the reviewer verifies independently and
+        # resolves the task directly via complete / request-changes.
+        brief_path = os.path.join(WORK_DIR, f"muse-task-{tid}.md")
+        with open(brief_path, "w") as bf:
+            bf.write(f"# Kanban Task (REVIEW): {tid}\n\n")
+            bf.write(f"**Title:** {title}\n\n")
+            bf.write("**Status:** review — do NOT claim this task\n\n")
+            bf.write(f"**Priority:** {t.get('priority', 'normal')}\n\n")
+            bf.write(f"## Body\n\n{t.get('body', '(no body)')}\n\n")
+            bf.write("## Instructions — this is a REVIEW. Verify independently, then resolve:\n\n")
+            bf.write("1. Check the deliverables yourself against the acceptance criteria (files, live state, attachments). Do not trust the handoff summary.\n")
+            bf.write("2. If it passes: approve with\n")
+            bf.write(f"   `HERMES_HOME={BOX_HOME} hermes kanban complete {tid} --result \"<verdict + evidence>\"`\n")
+            bf.write("3. If it does not pass: send it back with\n")
+            bf.write(f"   `HERMES_HOME={BOX_HOME} hermes kanban request-changes {tid} \"<exactly what must change>\"`\n")
+            bf.write("4. Either way, add a comment with your key findings:\n")
+            bf.write(f"   `HERMES_HOME={BOX_HOME} hermes kanban comment {tid} \"<comment>\"`\n")
+        print(f"kanban-worker: review brief written for {tid} — {title}")
+        continue
     # Claim via CLI (atomic, writes proper events)
     result = subprocess.run(
         [MWH, f"HERMES_HOME={BOX_HOME} hermes kanban claim {tid}"],
