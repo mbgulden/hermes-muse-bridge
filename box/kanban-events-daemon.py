@@ -43,6 +43,14 @@ POLL_SECONDS = 2
 JIMMY_PORT_FILE = "/home/ubuntu/.hermes/jimmy-listener-port"
 JIMMY_PORT_DEFAULT = 18991
 
+# Phase 2: steering via /steer (see steer_handler.py)
+try:
+    import steer_handler
+    _STEER_AVAILABLE = True
+except Exception as _e:
+    _STEER_AVAILABLE = False
+    _STEER_IMPORT_ERROR = str(_e)
+
 def jimmy_listener_url():
     try:
         with open(JIMMY_PORT_FILE) as f:
@@ -208,6 +216,18 @@ def main():
         log("telegram configured for chat_id=%s" % chat_id)
     else:
         log("WARNING: telegram not configured (missing token/chat_id), notifications disabled")
+
+    # Phase 2: start /steer listener in background thread
+    if _STEER_AVAILABLE and bot_token:
+        steer_handler.init(HERMES_HOME, STREAMOPS_ENV, log, send_telegram, open_db)
+        import threading
+        _st = threading.Thread(
+            target=steer_handler.steer_poll_loop, args=(bot_token, chat_id), daemon=True)
+        _st.start()
+    elif not _STEER_AVAILABLE:
+        log("WARNING: steer_handler import failed: %s" % _STEER_IMPORT_ERROR)
+    else:
+        log("WARNING: steer listener disabled (no bot token)")
 
     wm = read_watermark()
     if wm is None:
