@@ -33,6 +33,14 @@ sys.stdout.write(open(tmpl).read().replace("__HTTPS_PROXY__", proxy))
 PYEOF
 }
 
+# Compare with the proxy VALUE masked out: different agent processes get
+# different (equally valid) proxy credentials in their env, so a raw compare
+# made every other run rewrite the units and bounce both services. Only
+# structural differences — or a missing unit — count as a change. A fresh
+# install (e.g. after a VM replacement wiped /etc) always writes the current
+# run's proxy value.
+normalize() { sed -E 's|(Environment=HTTPS_PROXY=).*|\1__HTTPS_PROXY__|' "$1"; }
+
 changed=0
 for name in jimmy-tunnel jimmy-listener; do
   tmpl="$SRC_DIR/$name.service.tmpl"
@@ -40,7 +48,9 @@ for name in jimmy-tunnel jimmy-listener; do
   [ -f "$tmpl" ] || { echo "missing template $tmpl" >&2; exit 1; }
   rendered="$(mktemp)"
   render "$tmpl" > "$rendered"
-  if ! cmp -s "$rendered" "$dest" 2>/dev/null; then
+  if [ -f "$dest" ] && [ "$(normalize "$rendered")" = "$(normalize "$dest")" ]; then
+    : # up to date (proxy value may differ; leave the running config alone)
+  else
     sudo cp "$rendered" "$dest"
     echo "installed $name.service"
     changed=1
