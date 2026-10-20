@@ -39,8 +39,18 @@ LOG_FILE = os.path.join(HERMES_HOME, "logs", "kanban-events-daemon.log")
 AUTOBOT_ENV = os.path.join(HERMES_HOME, "profiles", "autobot", ".env")
 POLL_SECONDS = 2
 
-# Jimmy's listener via reverse SSH tunnel (box localhost:18989 -> VM :8899)
-JIMMY_LISTENER_URL = "http://localhost:18989/kanban-event"
+# Jimmy's listener via reverse SSH tunnel (port rotates; see jimmy-listener-port)
+# The tunnel script publishes the live port here; fallback to pool default.
+JIMMY_PORT_FILE = "/home/ubuntu/.hermes/jimmy-listener-port"
+JIMMY_PORT_DEFAULT = 18991
+
+def jimmy_listener_url():
+    try:
+        with open(JIMMY_PORT_FILE) as f:
+            port = int(f.read().strip())
+            return f"http://localhost:{port}/kanban-event"
+    except Exception:
+        return f"http://localhost:{JIMMY_PORT_DEFAULT}/kanban-event"
 
 # Event kinds that trigger a Telegram notification
 NOTIFY_KINDS = {"completed", "blocked", "crashed", "failed", "gave_up", "claimed"}
@@ -130,7 +140,7 @@ def post_to_jimmy(payload):
     try:
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
-            JIMMY_LISTENER_URL, data=data, method="POST",
+            jimmy_listener_url(), data=data, method="POST",
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=5) as r:
