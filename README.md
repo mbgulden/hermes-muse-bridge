@@ -1,6 +1,6 @@
 # hermes-muse-bridge
 
-**Version 1.1.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
+**Version 1.2.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
 
 Two-way integration between [Hermes](https://github.com/NousResearch/hermes-agent) (local AI agent orchestrator) and [Muse.ai](https://muse.ai) (your AI assistant). Assign kanban tasks to Muse, get them done, get notified.
 
