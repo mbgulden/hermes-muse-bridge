@@ -67,6 +67,15 @@ heartbeat() {
 
 ensure_listener() {
   if ! curl -s --max-time 3 "http://127.0.0.1:$LOCAL_PORT/health" 2>/dev/null | grep -q '"ok"'; then
+    # systemd owns the listener when its unit is installed (see systemd/ +
+    # install-jimmy-units.sh): it restarts within seconds, and a bare nohup
+    # copy would fight the unit for the port. Only fall back to a bare start
+    # when no unit exists (pre-systemd installs).
+    if systemctl cat jimmy-listener.service >/dev/null 2>&1; then
+      log "listener not responding; jimmy-listener.service owns it, leaving restart to systemd"
+      sleep 2
+      return
+    fi
     log "listener not responding, starting it"
     nohup python3 "$HERE/inbox-listener.py" >/dev/null 2>&1 &
     sleep 2
