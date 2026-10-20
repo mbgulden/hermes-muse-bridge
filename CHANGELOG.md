@@ -1,5 +1,15 @@
 # Changelog — hermes-muse-bridge
 
+## 1.2.0 (2026-10-20)
+
+Watcher fixes from production use:
+
+- **Parent-gate fix** — the claim query gated on parent status `!= 'completed'`, but the kanban DB's terminal status is `done`, so every task WITH a parent was silently skipped forever. The query now gates on `!= 'done'`.
+- **Review tasks now flow** — tasks in `review` status are picked up and briefed WITHOUT claiming (`hermes kanban claim` refuses review tasks by design). The reviewer verifies the work independently and resolves the task directly: `complete` to approve, `request-changes` to send it back. Review briefs are exempt from the retry loop — a stale brief is dropped and the task stays in `review`.
+- **SSH re-auth wall probe** — when the SSH transport hits an interactive re-auth wall (e.g. Tailscale SSH `check`), the watcher detects it once, logs the login URL, and skips the remote steps for that run instead of mis-parsing the wall message as data and aborting mid-run.
+- **Vanished-request guard** — an inbox request file deleted between listing and download is skipped cleanly instead of aborting the run.
+- Cron body and `muse-kanban-worker` skill updated for the review flow.
+
 ## 1.1.0 (2026-10-19)
 
 Improvements over the initial 1.0.0 release:
