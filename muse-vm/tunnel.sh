@@ -144,7 +144,13 @@ singleton_check() {
     fi
   fi
   echo $$ > "$PID_FILE"
-  trap 'rm -f "$PID_FILE"' EXIT
+  # Background heartbeat: the foreground loop blocks inside `ssh -N` for the
+  # tunnel's whole life, so a per-iteration heartbeat goes stale on healthy
+  # tunnels and the watchdog false-restarts them. Feed the watchdog from a
+  # subshell every 60s instead. (Fix applied Oct 20, 2026.)
+  ( while true; do heartbeat; sleep 60; done ) &
+  HB_PID=$!
+  trap 'kill $HB_PID 2>/dev/null; rm -f "$PID_FILE"' EXIT
 }
 
 # localhost mode: no tunnel needed
