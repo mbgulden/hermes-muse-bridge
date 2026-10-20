@@ -15,9 +15,9 @@ Run `~/workspace/bin/inbox-watch.sh` (installed by `./install.sh`). It does four
 
 3. **Kanban event tail (fallback):** Polls `task_events` in `<hermes_home>/kanban.db` for new lifecycle events since the watermark in `~/workspace/inbox/kanban-event-watermark`. Catches anything the tunnel missed. Significant events (completed, blocked, crashed, failed, claimed) are logged with KANBAN prefix.
 
-4. **Muse as kanban worker:** Queries for tasks where `assignee='<assignee>'` AND `status IN ('todo','ready')`, ordered by priority (urgent first). Claims up to 5 per run, writes a task brief to `~/workspace/inbox/work/muse-task-<id>.md`.
+4. **Muse as kanban worker:** Queries for tasks where `assignee='<assignee>'`, ordered by priority (urgent first). Tasks in `todo`/`ready` are claimed (up to 5 per run) via `hermes kanban claim`; tasks in `review` status are briefed WITHOUT claiming (the kanban CLI cannot claim a review task — the reviewer resolves it directly). Tasks whose parent task is not yet `done` are skipped. Either way a brief lands at `~/workspace/inbox/work/muse-task-<id>.md`.
 
-**Subagent dispatch:** If the watcher script claimed any new tasks this run (check for new `muse-task-*.md` files in `~/workspace/inbox/work/` without a corresponding `.done` marker), spawn one subagent per task (max 3 concurrent). Each subagent:
+**Subagent dispatch:** If the watcher script claimed or briefed any new tasks this run (check for new `muse-task-*.md` files in `~/workspace/inbox/work/` without a corresponding `.done` marker), spawn one subagent per task (max 3 concurrent). Each subagent:
 - Read the task brief from `~/workspace/inbox/work/muse-task-<id>.md`
 - Do the work described in the brief
 - Update the kanban task: mark `complete` with a result summary when done, or `blocked` if stuck
@@ -25,7 +25,9 @@ Run `~/workspace/bin/inbox-watch.sh` (installed by `./install.sh`). It does four
 - Write a `.done` marker file at `~/workspace/inbox/work/muse-task-<id>.done` when finished
 - Report back with what was done
 
-**Retry:** If a task brief has no `.done` marker after 30 minutes, increment its retry count and re-queue it. After 3 failures, mark the task `blocked` with a comment explaining the failures.
+**REVIEW briefs are different.** If the brief's title line says "Kanban Task (REVIEW)", the task is in `review` status awaiting a verdict — do NOT claim it and do NOT block it. Verify the work independently (per the brief's own instructions) and resolve it exactly as the brief says: `hermes kanban complete <id> --result "<verdict + evidence>"` to approve, or `hermes kanban request-changes <id> "<exactly what must change>"` to send it back, plus a findings comment either way. The `.done` marker and report-back steps still apply.
+
+**Retry:** If a task brief has no `.done` marker after 30 minutes, increment its retry count and re-queue it. After 3 failures, mark the task `blocked` with a comment explaining the failures. Review tasks are exempt from retry: a stale review brief is dropped and the task stays in `review`.
 
 Stay silent on quiet runs (no new requests, no significant kanban events, no tasks claimed). Surface to the user: any `escalation` request processed, any kanban event with kind `blocked`, `crashed`, `failed`, or `gave_up`, or any task completed. For other types, the response file on the box (or the log) is the delivery; no chat message needed.
 
