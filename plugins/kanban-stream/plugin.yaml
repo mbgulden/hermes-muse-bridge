@@ -1,0 +1,5 @@
+name: kanban-stream
+version: "1.0.0"
+description: "Stream kanban worker activity to Telegram ops channel; Phase 2: steering via task comments"
+author: "Michael Gulden"
+enabled_by_default: true
