@@ -11,7 +11,7 @@ Muse participates in the Hermes kanban board as a worker, not just an observer. 
 
 ```
 Task assigned to muse (todo/ready)
-  → inbox-watch.sh finds it (every 5 min)
+  → inbox-watch.sh finds it (every 1 min)
   → Claims via `hermes kanban claim <id>` (atomic, max 5/run)
   → Writes brief to ~/workspace/inbox/work/muse-task-<id>.md
   → Cron worker spawns subagent (max 3 concurrent)
@@ -40,6 +40,7 @@ This is atomic — if two workers try to claim simultaneously, only one succeeds
 | `todo` | Created, not yet ready | Creator |
 | `ready` | Ready for a worker to claim | Dispatcher or creator |
 | `running` | Claimed and being worked | `hermes kanban claim` |
+| `review` | Handed off, awaiting a reviewer's verdict | Worker via `hermes kanban request-review` |
 | `done` | Completed | `hermes kanban complete` |
 | `blocked` | Stuck, needs input | `hermes kanban block` |
 | `scheduled` | Parked for later | `hermes kanban schedule` |
@@ -67,6 +68,18 @@ HERMES_HOME=/home/ubuntu/.hermes hermes kanban comment <id> "Blocked: waiting on
 
 Blocked tasks trigger a notification to Michael via the kanban event tail.
 
+## Reviews (status = review)
+
+A task handed off for review is NOT claimed — `hermes kanban claim` refuses review tasks by design. The watcher includes `review` tasks in its query and writes a **REVIEW brief** instead (title line: `Kanban Task (REVIEW)`). The reviewer verifies the work independently — files, live state, attachments, never just the handoff summary — and resolves the task directly:
+
+- **Approve:** `HERMES_HOME=/home/ubuntu/.hermes hermes kanban complete <id> --result "<verdict + evidence>"`
+- **Send back:** `HERMES_HOME=/home/ubuntu/.hermes hermes kanban request-changes <id> "<exactly what must change>"`
+- Either way, add a comment with the key findings.
+
+Review briefs are exempt from the retry loop below: a stale review brief is dropped and the task stays in `review` — it is never re-queued or auto-blocked.
+
+**Parent gate:** the watcher skips any task whose parent is not yet `done`. The kanban DB's terminal status is `done` — gating on any other value (an earlier version used `completed`) silently skips every task that has a parent, forever.
+
 ## Commenting
 
 ```bash
@@ -92,7 +105,7 @@ UPDATE tasks SET status='blocked', consecutive_failures = consecutive_failures +
 WHERE id = '<task_id>' AND consecutive_failures >= 2;
 ```
 
-The `consecutive_failures` counter resets when a task completes successfully (handled by the kanban CLI on `complete`).
+The `consecutive_failures` counter resets when a task completes successfully (handled by the kanban CLI on `complete`). Review tasks never enter this loop — see Reviews above.
 
 ## Concurrency
 
