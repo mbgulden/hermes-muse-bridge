@@ -427,21 +427,84 @@ def on_post_tool_call(tool_name: str, result: Any = None,
         log.warning("kanban-stream on_post_tool_call failed: %s", e)
 
 
-def on_pre_llm_call(*args: Any, **kwargs: Any) -> None:
+
+# --- Phase 2: plugin-side steering via comment polling ---
+_steer_watermark = {}  # {task_id: last_seen_comment_id}
+_steer_last_poll = {}  # {task_id: monotonic time}
+_STEER_POLL_SECONDS = 6.0
+
+
+def _poll_steer_comments(task_id):
+    """Return list of new [steer] comment bodies since watermark, or None.
+    Seeds watermark on first call (returns None)."""
+    import sqlite3 as _sql
+    now = time.monotonic()
+    last = _steer_last_poll.get(task_id, 0)
+    if (now - last) < _STEER_POLL_SECONDS:
+        return None
+    _steer_last_poll[task_id] = now
+    seen = _steer_watermark.get(task_id)
+    try:
+        db_path = os.path.join(os.environ.get("HERMES_HOME", "/home/ubuntu/.hermes"), "kanban.db")
+        conn = _sql.connect("file:%s?mode=ro" % db_path, uri=True, timeout=3)
+        try:
+            if seen is None:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM task_comments WHERE task_id = ?",
+                    (task_id,)).fetchone()
+                _steer_watermark[task_id] = row[0]
+                return None
+            rows = conn.execute(
+                "SELECT id, author, body FROM task_comments "
+                "WHERE task_id = ? AND id > ? ORDER BY id ASC",
+                (task_id, seen)).fetchall()
+            if rows:
+                _steer_watermark[task_id] = max(r[0] for r in rows)
+            steers = []
+            own = (os.environ.get("HERMES_PROFILE") or "").strip()
+            for cid, author, body in rows:
+                body = (body or "").strip()
+                if not body.startswith("[steer]"):
+                    continue
+                if (author or "").strip() == own:
+                    continue
+                steers.append(body[len("[steer]"):].strip())
+            return steers or None
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning("kanban-stream steer poll failed: %s", e)
+        return None
+
+
+def on_pre_llm_call(*args: Any, **kwargs: Any) -> Any:
     try:
         if not _is_kanban_worker():
-            return
+            return None
         s = _stream()
-        if s is None or s.no_stream:
-            return
-        # Don't create the message on thinking alone — wait for first tool call
+        if s is None:
+            return None
+        # Phase 2: poll for steering comments (input works even with no_stream)
+        steers = _poll_steer_comments(_task_id())
+        steer_ctx = None
+        if steers:
+            joined = "\n".join("- " + x for x in steers)
+            steer_ctx = ("New steering instruction(s) from the operator "
+                         "(delivered mid-task \u2014 adjust your approach):\n" + joined)
+            if not s.no_stream:
+                s.push_error("\u2709\ufe0f Steer received")
+        if s.no_stream:
+            return {"context": steer_ctx} if steer_ctx else None
         with _streams_lock:
             has_message = s.message_id is not None or len(s.tool_history) > 0
-        if not has_message:
-            return
-        s.push_think()
+        if has_message:
+            s.push_think()
+        if steer_ctx:
+            return {"context": steer_ctx}
+        return None
     except Exception as e:
         log.warning("kanban-stream on_pre_llm_call failed: %s", e)
+        return None
 
 
 def on_post_api_request(task_id: Optional[str] = None,
