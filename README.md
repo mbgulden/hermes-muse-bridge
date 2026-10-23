@@ -1,6 +1,6 @@
 # hermes-muse-bridge
 
-**Version 1.2.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
+**Version 1.3.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
 
 Two-way integration between [Hermes](https://github.com/NousResearch/hermes-agent) (local AI agent orchestrator) and [Muse.ai](https://muse.ai) (your AI assistant). Assign kanban tasks to Muse, get them done, get notified.
 
@@ -52,8 +52,13 @@ See [INSTALL.md](INSTALL.md) for the full walkthrough.
 | `muse-vm/inbox-listener.py` | Muse VM | HTTP listener for pushed events + health checks |
 | `muse-vm/tunnel.sh` | Muse VM | Persistent reverse SSH tunnel (box → VM) |
 | `muse-vm/inbox-watch.sh` | Muse VM | Polls box for requests, claims tasks, handles retries |
+| `muse-vm/fleet-review-trigger.sh` | Muse VM | Hook: wakes a review pass the moment a significant kanban event lands |
+| `muse-vm/cron-body-review-sweep.md` | Muse VM | Cron template: scheduled salvage reviews, 3-strike rule, dispatch checks |
+| `muse-vm/review-pass-prompt.md` | Muse VM | The review-pass prompt shared by the hook and the sweep |
+| `muse-vm/fleet-canary.sh` | Muse VM | Hourly end-to-end probe of the box → tunnel → listener → inbox path |
 | `skills/call-muse/` | Hermes profiles | Lets Hermes agents ask Muse for reviews/judgments |
 | `skills/muse-kanban-worker/` | Muse VM | Documents the worker loop for Muse |
+| `skills/hermes-kanban-tasks/` | Muse VM | Task authoring: sizing, acceptance criteria, timed-run clauses, review gates |
 
 ## Transports
 
