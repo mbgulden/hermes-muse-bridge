@@ -1,5 +1,16 @@
 # Changelog — hermes-muse-bridge
 
+## 1.3.0 (2026-10-23)
+
+Automatic review: work is reviewed the moment it lands, not when someone remembers to ask.
+
+- **Event-triggered reviews** — new Muse hook (`muse-vm/fleet-review-trigger.sh` + `muse-vm/review-pass-prompt.md`): polls the push inbox every ~20s and wakes a review pass on significant lifecycle events (completed/blocked/crashed/failed/gave_up/timed_out, or status `review`), instead of waiting for the next scheduled sweep.
+- **Review sweep** — new cron body template (`muse-vm/cron-body-review-sweep.md`): salvage-first reviews of the review/blocked pile with mechanical verification, plus three action triggers — the **3-strike rule** (three failed runs in a lineage escalate to the reviewer personally; no fourth retry is ever queued), **idle-fleet escalation** (ready >30m with zero runs board-wide is escalated with evidence, not logged), and a **vLLM endpoint probe** before any dispatch. Also carries cap-overrun detection and the board-change digest.
+- **DISPATCH RULE** — a successor task is never parent-linked to a blocked-as-record task: a todo child of such a parent never dispatches (observed repeatedly in production). Lineage and strike counts live in the task body and the shared review state file instead.
+- **Inbox canary** — new `muse-vm/fleet-canary.sh` + `muse-vm/cron-body-canary.md`: an hourly synthetic event travels the real path (box POST → tunnel → listener → push inbox) and the events daemon is checked alive; on failure the script runs the unit recovery once and retries before reporting. The canary reads the tunnel's current remote port from the port file the tunnel publishes to the box — never hardcode the port.
+- **Task-authoring skill** — new `skills/hermes-kanban-tasks/SKILL.md`: the manager side of the board. One deliverable per task, 20–40 turns, binary acceptance criteria with the verification command named, DELIVERABLE-FIRST + REPORT-BEFORE-TIMEOUT clauses for every timed run, the 2h cap floor, salvage-first review order, the retry ladder, and the operational gates (WIP=1, review queue caps dispatch) — with the fleet calibration behind the numbers.
+- **Watcher hardening (from production)** — `inbox-watch.sh` now takes an flock lockfile so overlapping cron instances exit quietly instead of aborting each other at the SSH probe; closes the lock fd (`9>&-`) before respawning the listener so the listener can't inherit the lock; and the SSH probe captures the transport's exit code, so a non-wall transport failure (proxy flap, timeout) skips the remote steps cleanly instead of mis-parsing error text as data mid-run.
+
 ## 1.2.0 (2026-10-20)
 
 Watcher fixes from production use:
