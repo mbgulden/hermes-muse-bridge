@@ -28,6 +28,18 @@ if [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
+# Lockfile: overlapping cron instances used to abort each other silently at
+# the SSH wall probe (observed in production — two runs exited mid-run when a
+# transport flap hit both at once). flock on a held fd means a second
+# instance exits quietly instead of interleaving.
+LOCKFILE="$HOME/workspace/inbox/.watch.lock"
+mkdir -p "$HOME/workspace/inbox"
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+  # Another run is in progress; stay silent, cron retries next minute.
+  exit 0
+fi
+
 TRANSPORT="${BRIDGE_TRANSPORT:-tailscale-ssh}"
 BOX_HOME="${BRIDGE_BOX_HOME:-/home/ubuntu/.hermes}"
 ASSIGNEE="${BRIDGE_ASSIGNEE:-muse}"
@@ -58,7 +70,9 @@ log() {
 # Self-healing HTTP listener check
 if ! curl -s -m 3 http://127.0.0.1:8899/health | grep -q '"ok"'; then
   log "listener down — restarting"
-  ~/workspace/bin/ensure-listener.sh
+  # 9>&-: close the flock fd before spawning, so the listener can't inherit
+  # the watch lock and wedge every later run.
+  ~/workspace/bin/ensure-listener.sh 9>&-
 fi
 
 log "=== watch run start ==="
@@ -92,22 +106,34 @@ except Exception as e:
 done
 [ "$push_count" -gt 0 ] && log "kanban-push: processed $push_count file(s)"
 
-# ── SSH wall probe: if the SSH transport hits an interactive re-auth wall
+# ── SSH probe: if the SSH transport hits an interactive re-auth wall
 # (e.g. the Tailscale SSH "check" action), every remote step below would
 # mis-parse the wall message as data and abort mid-run under set -o pipefail.
 # Detect it once, log the login URL, and skip remote steps this run. The
 # local tunnel-push inbox (Step 1) already ran above. Transports that never
-# print a login URL (direct-ssh, localhost) make this a no-op.
-WALL_URL=$($MWH "true" 2>/dev/null | grep -o 'https://login\.tailscale\.com/a/[A-Za-z0-9]*' | head -1 || true)
+# print a login URL (direct-ssh, localhost) make the wall check a no-op.
+# The probe ALSO captures the SSH command's exit code: a non-wall transport
+# failure (proxy flap, timeout) used to sail through the URL-only check, and
+# every remote step then mis-parsed the error text as data, aborting mid-run
+# with garbage ids entering the inbox loop. Any non-zero probe exit now
+# skips the remote steps cleanly.
+PROBE_RC=0
+PROBE_OUT=$($MWH "true" 2>/dev/null) || PROBE_RC=$?
+WALL_URL=$(printf '%s' "$PROBE_OUT" | grep -o 'https://login\.tailscale\.com/a/[A-Za-z0-9]*' | head -1 || true)
 if [ -n "$WALL_URL" ]; then
   log "SSH wall up — skipping remote steps (inbox, kanban tail, worker). Re-auth required: $WALL_URL"
   log "=== watch run end (wall) ==="
   exit 0
 fi
+if [ "$PROBE_RC" -ne 0 ]; then
+  log "SSH transport down (probe rc=$PROBE_RC) — skipping remote steps (inbox, kanban tail, worker) this run"
+  log "=== watch run end (transport) ==="
+  exit 0
+fi
 
 # ── Step 2: Agent inbox ──
 # List request files on the box
-FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep -v "Warning:" || true)
+FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep '\.md$' | grep -v "Warning:" || true)
 
 if [ -z "$FILES" ]; then
   log "no requests"
@@ -165,7 +191,7 @@ for f in $FILES; do
     echo ""
     case "$TYPE" in
       escalation)
-        echo "Escalation received. Muse will surface this to Michael in chat."
+        echo "Escalation received. Muse will surface this to the user in chat."
         echo ""
         echo "Handler v1: automatic escalation routing is not yet implemented."
         echo "The request has been logged and will be reviewed."
@@ -174,7 +200,7 @@ for f in $FILES; do
         echo "Question received. Handler v1 does not auto-answer questions yet."
         echo ""
         echo "Your question has been logged. Your Muse agent will review and respond,"
-        echo "or route it to Michael if it needs his input."
+        echo "or route it to the user if it needs their input."
         ;;
       judgment)
         echo "Judgment request received. Handler v1 does not auto-judge yet."
@@ -309,7 +335,7 @@ fails = (row[0] or 0) + 1 if row else 1
 if fails >= 3:
     db.execute(\"UPDATE tasks SET status='blocked', consecutive_failures=? WHERE id = ?\", (fails, '$tid'))
     db.execute(\"INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'blocked', ?, strftime('%s','now'))\",
-               ('$tid', '{\"reason\": \"3 consecutive failures, escalated to Michael\"}'))
+               ('$tid', '{\"reason\": \"3 consecutive failures, escalated to the user\"}'))
     print(f'BLOCKED $tid after {fails} failures')
 else:
     db.execute(\"UPDATE tasks SET status='todo', consecutive_failures=? WHERE id = ?\", (fails, '$tid'))
