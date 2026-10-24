@@ -1,5 +1,12 @@
 # Changelog — hermes-muse-bridge
 
+## 1.5.0 (2026-10-24)
+
+The §5c review-sweep procedure gains the two playbook-adoption steps:
+
+- **Playbook-load verification (§5c)** — when a reviewed task carried a `Method:` line naming a pstack playbook, the review now verifies the load actually happened: the worker profile's `state.db` `messages` rows for the run's session are checked for a `skill_view` call naming that playbook. A miss does not change the verdict, but the review comment flags "Method line present, no playbook load in run evidence" and the miss is counted for the reliability audit's load-rate metric (Method-line tasks reviewed vs loads verified).
+- **Method-line backstop (§5c)** — during the dispatch pass, any `ready` task whose body matches a §2 playbook work type but carries no `Method:` line gets the Method line posted as a kanban comment (there is no body-edit command; workers read comments on claim). One backstop comment per task, never duplicated.
+
 ## 1.4.0 (2026-10-23)
 
 Token-burn modulation: polling LLM crons became deterministic scripts that wake an agent only when something needs judgment. (Measured motive: ~2,900 scheduled agent runs/day at ~270K tokens each, most of them reporting "nothing new"; the modulation projects ~700–900 runs/day.)
