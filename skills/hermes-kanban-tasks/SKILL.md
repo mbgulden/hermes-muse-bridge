@@ -34,6 +34,7 @@ The worker knows nothing about your project. Include:
 - **Background**: what this is for, in 2-3 sentences
 - **Constraints**: voice rules, technical limits, things to avoid
 - **References**: links, file paths, or prior task IDs they should read first
+- **Playbook routing (Oct 23, 2026)**: when the work type matches a pstack playbook deployed on the fleet, name it in the body as a Method line — measurement (Oct 23) showed the passive SOUL.md mention produced ~0 loads in 289 sessions; the task body is the routing surface that works. Map: defect fix → `pstack-bug-fix`; performance problem → `pstack-perf-issue`; review / investigation / verdict → `pstack-interrogate`; contested design choice → `pstack-arena` (generalist profile only); fan-out research → `pstack-swarm` (generalist profile only). Write it as: "Method: work this under the pstack-bug-fix playbook — load that skill first." One playbook per task; when none matches, no line.
 
 ```bash
 HERMES_HOME=/home/ubuntu/.hermes hermes kanban create "Draft pricing page copy" \
@@ -166,6 +167,110 @@ necessary but not sufficient. Three additions, now standing practice:
   final call (file what you have, INCOMPLETE + next step). One nudge per run
   per threshold, deduped in its state file. When a checkpoint plugin is
   enabled on all worker profiles, retire this cron — the plugin owns the job.
+
+### 5c. The automatic review sweep — standing procedure
+
+The review-sweep cron (30m safety net) and the review-trigger hook
+(event path) both execute this procedure; their bodies/prompts carry
+only the trigger and reporting rules and point here for the standing detail.
+
+**Access.** `<ssh-helper> 'remote command'` reaches the Hermes box
+(user/host hardcoded inside — never pass user@host). Kanban
+DB: `<box-hermes-home>/kanban.db` (python3 sqlite3; no sqlite3 CLI).
+CLI: `HERMES_HOME=<box-hermes-home> hermes kanban`. Comments need
+`--max-len 6000`; put full verdict text in a comment, keep `--result` short
+(result text has been mangled before). Remote heredocs/inline python break
+on quoting: write scripts to a local file, base64 -w0, decode on the box,
+run. GitHub is REST API only — use your GitHub API credential pattern.
+
+**State file.** `<state-file>`
+maps task_id → {reviewed_status, reviewed_at, action, strikes,
+lineage_root} and holds a `board_snapshot` (task status counts, per-task
+statuses, open PRs for your repos, engine main head). Read it first;
+rewrite it at the end of every run with
+the fresh snapshot. STATE-FILE WRITE DISCIPLINE (learned the hard way,
+after a concurrent in-place rewrite dropped ~39 entries): never write it in
+place — copy to a `.bak-<YYYYMMDD-HHMM>` sibling first, write the new state
+to a temp file in the same directory, rename over the original, read back
+and verify the key count did not shrink without an explicit reason.
+
+**Finding review work.** (a) tasks in `review`; (b) tasks in `blocked`
+whose latest run ended timed_out/crashed/gave_up with no review
+recorded for their current run count; (c) tasks the reviewer blocked under the
+retry-ladder gate with no successor yet. Review at most 2 per run, oldest
+first, salvage-first per §5b (deliverable → workspace → comments →
+evidence), verified mechanically.
+
+**Acting on the verdict.**
+- Complete and criteria met: full findings as a comment, then complete
+  with a one-line `--result`.
+- Incomplete, or the run failed on process/timing: apply the 3-STRIKE RULE
+  before authoring anything. A failed run with no proven deliverable is one
+  strike against the lineage; successors inherit the count (record
+  lineage_root + strikes in the state file for every task touched).
+  Failures caused by a pending user decision or a missing credential are
+  NOT strikes — route those to the decision list. At 3 strikes: no fourth
+  successor; comment "ESCALATED TO REVIEWER-DIRECT — 3 failed attempts across
+  this lineage (name the run ids). No fourth retry will be queued; the reviewer
+  executes this personally." and record action `escalated_reviewer_direct`.
+  Under 3: author the successor under the smaller-tasks rules — one
+  deliverable per task, 1h cap for narrow proofs (2h otherwise), the
+  DELIVERABLE-FIRST + REPORT-BEFORE-TIMEOUT clauses from §5 verbatim,
+  binary acceptance criteria, assignee = the original worker. Playbook
+  routing per §2: add the Method line when the work type matches (defect →
+  pstack-bug-fix; performance → pstack-perf-issue; review/investigation →
+  pstack-interrogate). Comment on the blocked task naming the successor
+  id(s), the strike count, and the named material change; leave the blocked
+  task blocked as the record. DISPATCH RULE: never set a parent link from
+  the successor to the blocked task — a todo child of a blocked-as-record
+  parent never dispatches (observed repeatedly in production); the
+  lineage record lives in the task body and the state file.
+- Superseded/duplicate: comment naming what supersedes it, then archive.
+- Needs the user's decision: comment with the exact decision needed, leave
+  it, and surface it in the run report.
+
+**Dispatch check, endpoint probe first.** From the box, probe each
+worker group's model endpoint:
+`curl -s -m 5 http://<vllm-endpoint>/v1/models` (one endpoint per worker
+group). Endpoint
+down → do not dispatch for its assignees; report the escalation with the
+probe result. Endpoint up + a task in `ready` >15m with no running run =
+dispatch failure: one `hermes kanban dispatch` pass, then verify a worker
+PID alive with a fresh heartbeat. IDLE-FLEET ESCALATION: after the pass, a
+task in `ready` >30m AND zero runs running board-wide = escalate in the run
+report as a reviewer action item with the evidence (ready ids + ages, dispatch
+output, running count) — never a log-only note.
+
+**Cap-overrun check (detection only).** For every running run, compare
+elapsed against the task's max_runtime_seconds. A run past cap whose
+deliverable has no final report is a failed run — name it in the run
+report; its review happens under the blocked-task step once it lands.
+
+**Board-change digest.** Diff the fresh snapshot against the stored one —
+status transitions, board counts, new open PRs (number, title, branch) on
+either repo, engine main head changes. Real transitions fold into the run
+report; a digest with no transitions and no actions is a silent run.
+
+**Failure ledger.** `<failure-ledger>`
+— read its header for the recording rule and its failure-mode classes before editing.
+A review that brings a lineage to 2 strikes opens an entry (lineage + task
+ids; run ids, outcomes, caps; failure-mode class; root cause if the
+evidence names it, otherwise "unknown" plus the probe that would find it;
+the corrective change made). When a lineage with an open entry resolves —
+successor completes, escalation closes, the user kills it — close the entry
+with root cause, corrective change, outcome. A strike requires no proven
+deliverable: check first whether the run actually finished (a reaping
+artifact is F6, not a strike). Keep the ledger's counts section current.
+Ledger edits ride along with the review; they are not a separate report.
+
+**Hard limits.** Never merge anything (PR reviews are verdicts posted as
+comments only, and only when a task asks for one); never delete branches,
+listings, or data; never modify live profile configs; never re-dispatch a
+blocked task unchanged; never author a successor that would be a lineage's
+4th attempt; max 2 reviews per run.
+
+**Bookkeeping.** Append a short entry to `~/memory/YYYY-MM-DD.md` (daily
+log). Never edit MEMORY.md.
 
 ### 6. Priority and assignee
 
