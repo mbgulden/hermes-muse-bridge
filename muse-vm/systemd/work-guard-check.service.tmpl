@@ -1,0 +1,11 @@
+[Unit]
+Description=Work-guard failsafe check (background job heartbeat monitor)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/hatch
+Environment=HTTPS_PROXY=__HTTPS_PROXY__
+ExecStart=/home/hatch/workspace/bin/work-guard-timer.sh
+TimeoutStartSec=300
