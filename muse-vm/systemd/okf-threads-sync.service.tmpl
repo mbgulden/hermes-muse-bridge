@@ -1,0 +1,11 @@
+[Unit]
+Description=OKF threads sync + prismatic-audit signal push
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/hatch
+Environment=HTTPS_PROXY=__HTTPS_PROXY__
+ExecStart=/home/hatch/workspace/bin/okf-sync-timer.sh
+TimeoutStartSec=900
