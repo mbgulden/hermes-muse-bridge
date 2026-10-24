@@ -1,5 +1,16 @@
 # Changelog — hermes-muse-bridge
 
+## 1.4.0 (2026-10-23)
+
+Token-burn modulation: polling LLM crons became deterministic scripts that wake an agent only when something needs judgment. (Measured motive: ~2,900 scheduled agent runs/day at ~270K tokens each, most of them reporting "nothing new"; the modulation projects ~700–900 runs/day.)
+
+- **Inbox trigger hook** — new `muse-vm/hermes-inbox-trigger.sh` + `muse-vm/inbox-trigger-prompt.md`: replaces the 1-minute inbox-watch cron. Every ~60s it runs the watcher script (unchanged — polling, answering, claiming, briefing all happen in shell), diffs durable state, and wakes an agent only on a new task brief, a newly processed agent request, a significant kanban event, a failure flag from the timer jobs, or the SSH re-auth wall.
+- **Units-ensure hook** — new `muse-vm/jimmy-units-ensure.sh` + `muse-vm/units-ensure-prompt.md`: replaces the 15-minute units cron. Runs the unit installer every ~60s and stays silent while everything is installed and active. Deliberately a hook, not a systemd timer: a timer cannot reinstall itself after a VM replacement wipes /etc, so this hook is the recovery anchor for all units.
+- **Tripwire hook** — new `muse-vm/branch-protection-tripwire.sh` + `muse-vm/tripwire-prompt.md`: replaces the 5-minute cron. Runs the branch-protection check every ~300s; wakes only on a trip verdict or 3+ consecutive check errors.
+- **Script-only timers** — the work-guard check (15m) and the knowledge sync (1h) moved from LLM crons to systemd timers: new wrappers `muse-vm/work-guard-timer.sh` / `muse-vm/okf-sync-timer.sh` and unit templates under `muse-vm/systemd/`. Notable outcomes (a restarted job, a failed check, sync warnings) drop flag files that the inbox-trigger hook wakes an agent on; routine runs stay silent.
+- **Installer covers the timers** — `install-jimmy-units.sh` now renders and installs the timer services + timers alongside the tunnel/listener, and enables the timers.
+- **Review procedure moved into the skill** — the review sweep's standing procedure now lives in `skills/hermes-kanban-tasks/SKILL.md` §5c (access, state-file write discipline, verdict actions, dispatch + failure-ledger mechanics); `muse-vm/cron-body-review-sweep.md` is now a slim 30-minute safety-net body that points to §5c. The skill also gains the §2 playbook-routing Method line.
+
 ## 1.3.0 (2026-10-23)
 
 Automatic review: work is reviewed the moment it lands, not when someone remembers to ask.
