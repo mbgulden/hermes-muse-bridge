@@ -1,0 +1,10 @@
+[Unit]
+Description=Run work-guard-check every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=work-guard-check.service
+
+[Install]
+WantedBy=timers.target
