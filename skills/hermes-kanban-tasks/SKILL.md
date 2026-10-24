@@ -229,6 +229,17 @@ evidence), verified mechanically.
 - Needs the user's decision: comment with the exact decision needed, leave
   it, and surface it in the run report.
 
+**Playbook-load verification.** When a reviewed task's body carried a `Method:`
+line naming a pstack playbook, verify the load actually happened — never
+assume it. Evidence: the worker profile's `state.db` `messages` table,
+rows for the run's session (session id in `task_runs.metadata`) whose
+`tool_calls` contain a `skill_view` call naming that `pstack-<name>`.
+Load found → note it in the review comment. No load → the verdict still
+stands on the deliverable's merits, but the review comment flags
+"Method line present, no playbook load in run evidence" and the miss is
+counted for the load-rate metric in the fleet reliability audit
+(Method-line tasks reviewed vs loads verified).
+
 **Dispatch check, endpoint probe first.** From the box, probe each
 worker group's model endpoint:
 `curl -s -m 5 http://<vllm-endpoint>/v1/models` (one endpoint per worker
@@ -240,6 +251,15 @@ PID alive with a fresh heartbeat. IDLE-FLEET ESCALATION: after the pass, a
 task in `ready` >30m AND zero runs running board-wide = escalate in the run
 report as a reviewer action item with the evidence (ready ids + ages, dispatch
 output, running count) — never a log-only note.
+
+**Method-line backstop.** During the same dispatch pass,
+check every `ready` task: if its body matches a playbook work type (defect
+fix, performance, review/investigation, contested design, fan-out
+research — the §2 map) but carries no `Method:` line, post a kanban
+comment on it carrying the Method line for the matching playbook. There
+is no body-edit command; workers read comments on claim, so the comment
+is the routing surface. One backstop comment per task — check the task's
+comments first and never duplicate it.
 
 **Cap-overrun check (detection only).** For every running run, compare
 elapsed against the task's max_runtime_seconds. A run past cap whose
