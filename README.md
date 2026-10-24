@@ -1,6 +1,6 @@
 # hermes-muse-bridge
 
-**Version 1.3.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
+**Version 1.4.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
 
 Two-way integration between [Hermes](https://github.com/NousResearch/hermes-agent) (local AI agent orchestrator) and [Muse.ai](https://muse.ai) (your AI assistant). Assign kanban tasks to Muse, get them done, get notified.
 
@@ -52,6 +52,15 @@ See [INSTALL.md](INSTALL.md) for the full walkthrough.
 | `muse-vm/inbox-listener.py` | Muse VM | HTTP listener for pushed events + health checks |
 | `muse-vm/tunnel.sh` | Muse VM | Persistent reverse SSH tunnel (box → VM) |
 | `muse-vm/inbox-watch.sh` | Muse VM | Polls box for requests, claims tasks, handles retries |
+| `muse-vm/hermes-inbox-trigger.sh` | Muse VM | Hook: runs the watcher every ~60s, wakes an agent only on items needing judgment |
+| `muse-vm/inbox-trigger-prompt.md` | Muse VM | The wake prompt for the inbox-trigger hook |
+| `muse-vm/jimmy-units-ensure.sh` | Muse VM | Hook: keeps the systemd units installed/active; recovery anchor after VM replacements |
+| `muse-vm/units-ensure-prompt.md` | Muse VM | The wake prompt for the units-ensure hook |
+| `muse-vm/branch-protection-tripwire.sh` | Muse VM | Hook: wakes an agent only when the branch-protection check trips or breaks |
+| `muse-vm/tripwire-prompt.md` | Muse VM | The wake prompt for the tripwire hook |
+| `muse-vm/work-guard-timer.sh` | Muse VM | systemd-timer wrapper for the work-guard check; flags failures for the inbox hook |
+| `muse-vm/okf-sync-timer.sh` | Muse VM | systemd-timer wrapper for a knowledge sync + audit push; flags warnings |
+| `muse-vm/systemd/` | Muse VM | Unit templates, incl. the work-guard-check and sync timers |
 | `muse-vm/fleet-review-trigger.sh` | Muse VM | Hook: wakes a review pass the moment a significant kanban event lands |
 | `muse-vm/cron-body-review-sweep.md` | Muse VM | Cron template: scheduled salvage reviews, 3-strike rule, dispatch checks |
 | `muse-vm/review-pass-prompt.md` | Muse VM | The review-pass prompt shared by the hook and the sweep |
@@ -74,7 +83,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
 This bridge is built for how Muse.ai works:
 
-- **Cron-based polling** — Muse runs scheduled jobs; the watcher is a 1-minute cron.
+- **Event-based first** — deterministic hook scripts and systemd timers do the polling; an agent wakes only when something needs judgment (the token-burn modulation). The watcher still runs every minute — as a script inside the inbox-trigger hook, not an LLM cron.
 - **Work-guard self-healing** — Background processes (tunnel, listener) register heartbeats; a failsafe restarts them if they die. See `docs/WORK-GUARD.md`.
 - **Subagent dispatch** — Muse fans out kanban tasks to subagents (max 3 concurrent), triaged by priority.
 - **Skills, not webhooks** — Hermes agents invoke Muse via the `call-muse` skill (file-based inbox), not HTTP callbacks.
