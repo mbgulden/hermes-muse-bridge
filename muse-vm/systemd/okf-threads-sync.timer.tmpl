@@ -1,0 +1,10 @@
+[Unit]
+Description=Run okf-threads-sync hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=okf-threads-sync.service
+
+[Install]
+WantedBy=timers.target
