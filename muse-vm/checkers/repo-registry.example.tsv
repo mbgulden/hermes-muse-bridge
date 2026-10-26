@@ -1,0 +1,6 @@
+# Repo dispositions for check-uncommitted.py — path glob, disposition, note.
+# live = local work is the working surface; stale uncommitted changes FAIL.
+# scratch/archive = build/test clones whose canonical home is elsewhere; reported once as INFO, never FAIL.
+# Unregistered repos default to live (fail-safe toward visibility).
+~/workspace/example-scratch/*	scratch	Example: throwaway clones; canonical home is the remote
+~/workspace/example-project	live	Example: the main working repo
