@@ -1,8 +1,27 @@
 # hermes-muse-bridge
 
-**Version 1.6.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
+**Version 1.6.1** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
 
 Two-way integration between [Hermes](https://github.com/NousResearch/hermes-agent) (local AI agent orchestrator) and [Muse.ai](https://muse.ai) (your AI assistant). Assign kanban tasks to Muse, get them done, get notified.
+
+
+## Start here — which repo for what
+
+This setup spans four public repos. Pick by what you want to do:
+
+| You want to… | Go to |
+|---|---|
+| Run the Muse↔Hermes operating setup itself (kanban bridge, review machinery, hooks, timers, checkers) | **This repo** — start with [INSTALL.md](INSTALL.md) |
+| Give your agents engineering playbooks (bug fix, adversarial review, parallel swarms, verification skills) | [muse-pstack](https://github.com/mbgulden/muse-pstack) |
+| Stop long Hermes runs from dying silently at their budget cap | [agent-checkpoint](https://github.com/mbgulden/agent-checkpoint) — a Hermes plugin (catalog listing in progress) |
+| Watch Hermes kanban workers live in Telegram and steer them mid-task | [hermes-kanban-stream](https://github.com/mbgulden/hermes-kanban-stream) — a Hermes plugin, listed in the Hermes Plugin Catalog |
+
+Related: [prismatic-engine](https://github.com/mbgulden/prismatic-engine)
+is the multi-agent orchestration engine built on this setup — a separate
+project, not part of this bridge.
+
+Copies of both plugins live under `plugins/` here for convenience; the
+standalone repos are canonical for releases.
 
 ## What it does
 
@@ -68,7 +87,8 @@ See [INSTALL.md](INSTALL.md) for the full walkthrough.
 | `skills/call-muse/` | Hermes profiles | Lets Hermes agents ask Muse for reviews/judgments |
 | `skills/muse-kanban-worker/` | Muse VM | Documents the worker loop for Muse |
 | `skills/hermes-kanban-tasks/` | Muse VM | Task authoring: sizing, acceptance criteria, timed-run clauses, review gates, and the mechanical task-size checker |
-| `plugins/agent-checkpoint/` | Hermes box | Budget checkpoints for long runs: persists the checkpoint itself (file + kanban comment) at 50% / 80% of a run's budget — tool-boundary hooks + a watchdog thread, so single-turn runs can't cross their budget silently. Ships with its test suite |
+| `plugins/agent-checkpoint/` | Hermes box | Budget checkpoints for long runs (v0.3.0): persists the checkpoint itself (file + kanban comment) at 50% / 80% of a run's budget — tool-boundary hooks + a watchdog thread, so single-turn runs can't cross their budget silently — plus interval checkpoints for uncapped runs. Ships with LICENSE, README, and its test suite |
+| `plugins/kanban-stream/` | Hermes box | Live-streams kanban workers to Telegram: one message per task, edited in place as the worker goes, with mid-task steering from Telegram via the companion daemon (`bin/steer.py`). Ships with its smoke suite |
 | `muse-vm/checkers/` | Muse VM | The prose-to-checkers stack: mechanical gates for copy, leaks, OKF sync content, port quality, PR evidence, uncommitted work, fleet compliance, and verify-CLI grading, plus the task-size specimen set and example operator-data files |
 
 ## Transports
