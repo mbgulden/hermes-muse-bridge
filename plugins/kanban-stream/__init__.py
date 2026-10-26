@@ -1,12 +1,23 @@
-"""Kanban Stream Plugin for Hermes Agent — Phase 1c: formatting hardening.
+"""Kanban Stream Plugin for Hermes Agent — v1.0.3 (public release).
 
-Streams kanban worker activity (tool calls, thinking phases) to Michael's
-1:1 chat with @StreamOpsB0tbot. One message per task, edited in place.
+Streams kanban worker activity (tool calls, thinking phases) to a
+Telegram ops channel. One message per task, edited in place. Final
+messages are pinned.
 
 Phase 1a: skeleton + hooks (done). Phase 1b: Telegram forwarding (done).
-Phase 1c: formatting hardening (this) — rolling window, elapsed timer,
-edit counting, final-state pin, tokens/sec from post_api_request usage.
-Phase 2: steering.
+Phase 1c: formatting hardening — rolling window, elapsed timer,
+edit counting, final-state pin, total output tokens from post_api_request usage.
+Phase 2: steering via kanban task comments (write-side: the optional
+bin/steer.py companion daemon posts /steer commands as [steer] comments
+from Telegram through the public `hermes kanban comment` CLI; delivery
+to the running worker is core's job — core hands every new non-self
+task comment to the worker. Read-side, the plugin only watches for
+[steer] comments to mirror a "Steer received" line into the stream).
+
+Credentials are resolved through Hermes' secret scope
+(agent.secret_scope.get_secret) per catalog Rule 11 — no .env files or
+hardcoded absolute paths are read directly. All paths derive from
+HERMES_HOME / HERMES_KANBAN_DB.
 """
 
 import json
@@ -25,39 +36,74 @@ log = logging.getLogger("kanban-stream")
 # Config
 # ---------------------------------------------------------------------------
 
-_STREAMOPS_ENV = "/home/ubuntu/.hermes/profiles/streamops/.env"
-_KANBAN_DB = "/home/ubuntu/.hermes/kanban.db"
+# Credential env var names (namespaced so this plugin never collides with
+# the built-in Telegram gateway platform's own TELEGRAM_BOT_TOKEN /
+# TELEGRAM_ALLOWED_USERS, which belong to the profile's chat bot).
+_BOT_TOKEN_VAR = "KANBAN_STREAM_BOT_TOKEN"
+_ALLOWED_USERS_VAR = "KANBAN_STREAM_ALLOWED_USERS"
+_OPS_CHAT_VAR = "KANBAN_STREAM_OPS_CHAT_ID"
 
 _EDIT_THROTTLE_SECONDS = 5    # max 1 edit / 5s per task
 _THINK_THROTTLE_SECONDS = 30  # max 1 thinking indicator / 30s
 _TOOL_HISTORY_MAX = 5         # rolling window of tool calls
 _TG_TIMEOUT = 5.0             # Telegram API timeout
 
+_warned: set = set()
 
-def _load_streamops_env() -> Dict[str, str]:
-    """Read streamops .env (token, chat id). Never log values."""
-    cfg: Dict[str, str] = {}
-    try:
-        with open(_STREAMOPS_ENV) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                cfg[k.strip()] = v.strip().strip('"').strip("'")
-    except Exception as e:
-        log.warning("kanban-stream: cannot read streamops .env: %s", e)
-    return cfg
+
+def _hermes_home() -> str:
+    """Hermes home root: HERMES_HOME (worker-injected) or ~/.hermes.
+
+    A single-profile deployment may set HERMES_HOME to a profile home
+    (~/.hermes/profiles/<name>); in that case the kanban root lives one
+    level up. The kanban.db lookup below tolerates both.
+    """
+    return os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+
+
+def _kanban_db_path() -> str:
+    """Kanban DB path: HERMES_KANBAN_DB (injected into workers) or
+    <root>/kanban.db, trying both the profile home and the shared root."""
+    pinned = os.environ.get("HERMES_KANBAN_DB")
+    if pinned:
+        return pinned
+    root = _hermes_home()
+    candidates = [
+        os.path.join(root, "kanban.db"),
+    ]
+    # If HERMES_HOME points at a profile home, the shared board DB is
+    # usually in the parent directory.
+    if os.path.basename(root) in ("home",) or "/profiles/" in root:
+        parent = os.path.dirname(root)
+        candidates.append(os.path.join(parent, "kanban.db"))
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]
+
+
+def _secret(name: str) -> str:
+    """Resolve a credential through the active profile's secret scope.
+
+    agent.secret_scope.get_secret always exists at the supported Hermes
+    floor, so there is deliberately no os.environ fallback: a scope
+    error must surface (it is what stops cross-profile reads), never be
+    swallowed into a silent env read. Call this only on a hook's own
+    thread — a daemon thread does not carry the profile's secret scope.
+    """
+    from agent import secret_scope
+    val = secret_scope.get_secret(name, "") or ""
+    return val.strip()
 
 
 def _bot_token() -> str:
-    return _load_streamops_env().get("TELEGRAM_BOT_TOKEN", "")
+    return _secret(_BOT_TOKEN_VAR)
 
 
 def _chat_id() -> str:
-    cfg = _load_streamops_env()
-    # 1:1 mode: send directly to Michael's user ID
-    return cfg.get("TELEGRAM_OPS_CHAT_ID") or cfg.get("TELEGRAM_ALLOWED_USERS", "").split(",")[0].strip()
+    """Destination chat: explicit ops chat id, or the first allowlisted
+    user (1:1 streaming mode)."""
+    return _secret(_OPS_CHAT_VAR) or _secret(_ALLOWED_USERS_VAR).split(",")[0].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -72,13 +118,13 @@ def _task_id() -> str:
     return os.environ.get("HERMES_KANBAN_TASK", "")
 
 
+# Public surface only: register() stores ctx.profile_name here; the
+# plugin never imports the private hermes_cli.profiles module.
+_profile_name = "hermes"
+
+
 def _profile() -> str:
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        p = get_active_profile_name() or "hermes"
-        return "fred" if p == "orchestrator" else p
-    except Exception:
-        return "hermes"
+    return _profile_name
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +140,7 @@ def _task_meta(task_id: str) -> Dict[str, Any]:
         return _task_meta_cache[task_id]
     meta = {"title": task_id, "no_stream": False}
     try:
-        conn = sqlite3.connect(f"file:{_KANBAN_DB}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(f"file:{_kanban_db_path()}?mode=ro", uri=True, timeout=5)
         try:
             cur = conn.cursor()
             cur.execute("SELECT title, body FROM tasks WHERE id = ?", (task_id,))
@@ -115,10 +161,20 @@ def _task_meta(task_id: str) -> Dict[str, Any]:
 # Telegram client (fire-and-forget, fail-open)
 # ---------------------------------------------------------------------------
 
-def _tg_request(method: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Synchronous Telegram Bot API call. Returns parsed JSON or None."""
-    token = _bot_token()
+def _tg_request(method: str, params: Dict[str, Any],
+                token: str) -> Optional[Dict[str, Any]]:
+    """Synchronous Telegram Bot API call. Returns parsed JSON or None.
+
+    The token is resolved by the caller on a hook's own thread (the
+    profile's secret scope does not travel to daemon threads) and
+    handed in — no secret resolution happens inside this call.
+    """
     if not token:
+        if "no-token" not in _warned:
+            _warned.add("no-token")
+            log.warning(
+                "kanban-stream: %s is not set in the active profile scope — "
+                "no streaming until it is (see .env.example)", _BOT_TOKEN_VAR)
         return None
     try:
         url = f"https://api.telegram.org/bot{token}/{method}"
@@ -135,12 +191,17 @@ def _tg_request(method: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]
         return None
 
 
-def _tg_async(method: str, params: Dict[str, Any],
+def _tg_async(method: str, params: Dict[str, Any], token: str,
               on_result: Optional[Any] = None) -> None:
-    """Fire-and-forget Telegram call in a daemon thread."""
+    """Fire-and-forget Telegram call in a daemon thread.
+
+    Token and chat id are resolved before this is called (on the hook's
+    own thread) and travel with the params/token arguments — a daemon
+    thread does not carry the profile's secret scope.
+    """
     def _worker():
         try:
-            result = _tg_request(method, params)
+            result = _tg_request(method, params, token)
             if on_result and result:
                 try:
                     on_result(result)
@@ -161,6 +222,8 @@ class _TaskStream:
     def __init__(self, task_id: str):
         self.task_id = task_id
         self.profile = _profile()
+        self._token: Optional[str] = None   # resolved lazily, hook thread
+        self._chat: Optional[str] = None    # resolved lazily, hook thread
         meta = _task_meta(task_id)
         self.title = meta["title"]
         self.no_stream = meta["no_stream"]
@@ -177,6 +240,22 @@ class _TaskStream:
         self._pending_edit = False
         self._send_in_flight = False
 
+    def _creds(self, resolve: bool = True):
+        """(token, chat_id) pair for Telegram calls.
+
+        Resolution goes through the profile's secret scope, which only
+        exists on hook threads — so resolve-and-cache happens on the
+        calling (hook) thread and the cached pair is what gets handed
+        to _tg_async. Daemon-thread callbacks pass resolve=False and
+        reuse the cache; they never touch the secret scope.
+        """
+        if resolve:
+            if self._token is None:
+                self._token = _bot_token()
+            if self._chat is None:
+                self._chat = _chat_id()
+        return self._token, self._chat
+
     def add_completion_tokens(self, n: int):
         """Accumulate output tokens from a post_api_request hook."""
         if n <= 0:
@@ -184,13 +263,19 @@ class _TaskStream:
         with self._lock:
             self.completion_tokens += n
 
-    def _tok_per_sec(self) -> str:
-        elapsed_s = time.time() - self.start_time
+    def _token_suffix(self) -> str:
+        """State-line suffix: total output tokens, or "" when none yet.
+
+        (Replaces the old tok/s figure — cumulative tokens ÷ wall-clock
+        elapsed, which read as a generation rate but mostly measured
+        waiting. A true rate is not computable from per-request token
+        counts alone, so the display shows the total instead.)
+        """
         with self._lock:
             toks = self.completion_tokens
-        if elapsed_s < 1 or toks <= 0:
+        if toks <= 0:
             return ""
-        return f"{toks / elapsed_s:.0f} tok/s"
+        return f" · {toks:,} out tok"
 
     def _format(self, final: bool = False, blocked: bool = False,
                 summary: str = "") -> str:
@@ -199,15 +284,14 @@ class _TaskStream:
             elapsed = f"{elapsed_s}s"
         else:
             elapsed = f"{elapsed_s // 60}m {elapsed_s % 60}s"
-        tps = self._tok_per_sec()
-        tps_suffix = f" · {tps}" if tps else ""
+        tok_suffix = self._token_suffix()
 
         if final:
             icon = "🚫" if blocked else "✅"
-            state_line = f"⏱️ {elapsed} total{tps_suffix}"
+            state_line = f"⏱️ {elapsed} total{tok_suffix}"
         else:
             icon = "🔧"
-            state_line = f"⏱️ {elapsed} elapsed{tps_suffix}"
+            state_line = f"⏱️ {elapsed} elapsed{tok_suffix}"
 
         lines = [
             f"{icon} @{self.profile} — {self.task_id}",
@@ -226,15 +310,16 @@ class _TaskStream:
         text = "\n".join(lines)
         return text[:4000]  # stay under Telegram's 4096 limit
 
-    def _do_send_initial(self):
-        chat = _chat_id()
+    def _do_send_initial(self, final: bool = False, blocked: bool = False,
+                         summary: str = ""):
+        token, chat = self._creds()
         if not chat:
             return
         with self._lock:
             if self._send_in_flight or self.message_id is not None:
                 return  # already sending or sent
             self._send_in_flight = True
-        text = self._format()
+        text = self._format(final=final, blocked=blocked, summary=summary)
         def _on_result(result):
             try:
                 mid = result.get("result", {}).get("message_id")
@@ -245,12 +330,12 @@ class _TaskStream:
             except Exception:
                 with self._lock:
                     self._send_in_flight = False
-        _tg_async("sendMessage", {"chat_id": chat, "text": text},
+        _tg_async("sendMessage", {"chat_id": chat, "text": text}, token,
                   on_result=_on_result)
 
     def _do_edit(self, final: bool = False, blocked: bool = False,
                  summary: str = ""):
-        chat = _chat_id()
+        token, chat = self._creds()
         if not chat:
             return
         with self._lock:
@@ -258,27 +343,43 @@ class _TaskStream:
         text = self._format(final=final, blocked=blocked, summary=summary)
         if mid:
             def _on_result(result):
-                # If edit failed (message gone), post fresh
+                # If the message is gone (deleted / too old to edit),
+                # forget its id and post a fresh one carrying the same
+                # state. Other failures (flood control, "message is not
+                # modified") must NOT trigger a repost — that would
+                # duplicate the stream message.
                 if not result.get("ok"):
-                    self._do_send_initial()
+                    desc = str(result.get("description", "")).lower()
+                    if ("message to edit not found" in desc
+                            or "message can't be edited" in desc
+                            or "message_id_invalid" in desc):
+                        with self._lock:
+                            self.message_id = None
+                        self._do_send_initial(final=final, blocked=blocked,
+                                              summary=summary)
             with self._lock:
                 self.edit_count += 1
             _tg_async("editMessageText",
                       {"chat_id": chat, "message_id": mid, "text": text},
-                      on_result=_on_result)
+                      token, on_result=_on_result)
         else:
-            self._do_send_initial()
+            self._do_send_initial(final=final, blocked=blocked,
+                                  summary=summary)
 
     def _do_pin(self):
-        """Pin the final message. Fail-open; bots can pin their own 1:1 messages."""
-        chat = _chat_id()
+        """Pin the final message. Fail-open; bots can pin their own 1:1 messages.
+
+        Runs on a delayed daemon thread: uses the cached credentials
+        only (resolve=False) — the secret scope is never touched here.
+        """
+        token, chat = self._creds(resolve=False)
         with self._lock:
             mid = self.message_id
-        if not chat or not mid:
+        if not chat or not mid or not token:
             return
         _tg_async("pinChatMessage",
                   {"chat_id": chat, "message_id": mid,
-                   "disable_notification": True})
+                   "disable_notification": True}, token)
 
     def schedule_edit(self, force: bool = False):
         """Throttled edit: max 1 per _EDIT_THROTTLE_SECONDS."""
@@ -338,9 +439,12 @@ class _TaskStream:
         def _delayed_pin():
             time.sleep(5)
             self._do_pin()
+            with self._lock:
+                toks = self.completion_tokens
             log.warning("kanban-stream: task %s finished, %d edits total, %s",
                         self.task_id, self.edit_count,
-                        self._tok_per_sec() or "no tok/s")
+                        f"{toks:,} out tok" if toks > 0
+                        else "no output tokens")
         threading.Thread(target=_delayed_pin, daemon=True).start()
 
 
@@ -383,10 +487,13 @@ def _is_error_result(result: Any) -> bool:
         return False
     try:
         if isinstance(result, dict):
+            # Key-based signals only: a substring scan over a dict result
+            # false-positives on tool output that merely mentions errors
+            # (a file read, a log tail, a search hit).
             if result.get("error") or result.get("success") is False:
                 return True
-            s = str(result).lower()
-            return "error" in s and "no error" not in s
+            status = str(result.get("status", "")).lower()
+            return status in ("error", "failed", "failure")
         s = str(result).lower()
         return ("error" in s or "failed" in s or "traceback" in s) and len(s) < 500
     except Exception:
@@ -428,24 +535,29 @@ def on_post_tool_call(tool_name: str, result: Any = None,
 
 
 
-# --- Phase 2: plugin-side steering via comment polling ---
-_steer_watermark = {}  # {task_id: last_seen_comment_id}
-_steer_last_poll = {}  # {task_id: monotonic time}
+# --- Phase 2: steer watch (display only — core delivers steers) ---
+_steer_watermark: Dict[str, int] = {}    # {task_id: last_seen_comment_id}
+_steer_last_poll: Dict[str, float] = {}  # {task_id: monotonic time}
 _STEER_POLL_SECONDS = 6.0
 
 
-def _poll_steer_comments(task_id):
-    """Return list of new [steer] comment bodies since watermark, or None.
-    Seeds watermark on first call (returns None)."""
+def _watch_steer_comments(task_id) -> int:
+    """Count new [steer] comments since the watermark (0 when none).
+
+    Display-only: Hermes core already delivers every new non-self task
+    comment to the running worker, so the plugin never injects steer
+    text into the LLM turn (that double-delivered every steer). This
+    watch exists solely to mirror a "Steer received" line into the
+    stream. Seeds the watermark on first call (returns 0)."""
     import sqlite3 as _sql
     now = time.monotonic()
     last = _steer_last_poll.get(task_id, 0)
     if (now - last) < _STEER_POLL_SECONDS:
-        return None
+        return 0
     _steer_last_poll[task_id] = now
     seen = _steer_watermark.get(task_id)
     try:
-        db_path = os.path.join(os.environ.get("HERMES_HOME", "/home/ubuntu/.hermes"), "kanban.db")
+        db_path = _kanban_db_path()
         conn = _sql.connect("file:%s?mode=ro" % db_path, uri=True, timeout=3)
         try:
             if seen is None:
@@ -453,14 +565,14 @@ def _poll_steer_comments(task_id):
                     "SELECT COALESCE(MAX(id), 0) FROM task_comments WHERE task_id = ?",
                     (task_id,)).fetchone()
                 _steer_watermark[task_id] = row[0]
-                return None
+                return 0
             rows = conn.execute(
                 "SELECT id, author, body FROM task_comments "
                 "WHERE task_id = ? AND id > ? ORDER BY id ASC",
                 (task_id, seen)).fetchall()
             if rows:
                 _steer_watermark[task_id] = max(r[0] for r in rows)
-            steers = []
+            count = 0
             own = (os.environ.get("HERMES_PROFILE") or "").strip()
             for cid, author, body in rows:
                 body = (body or "").strip()
@@ -468,13 +580,13 @@ def _poll_steer_comments(task_id):
                     continue
                 if (author or "").strip() == own:
                     continue
-                steers.append(body[len("[steer]"):].strip())
-            return steers or None
+                count += 1
+            return count
         finally:
             conn.close()
     except Exception as e:
-        log.warning("kanban-stream steer poll failed: %s", e)
-        return None
+        log.warning("kanban-stream steer watch failed: %s", e)
+        return 0
 
 
 def on_pre_llm_call(*args: Any, **kwargs: Any) -> Any:
@@ -484,23 +596,18 @@ def on_pre_llm_call(*args: Any, **kwargs: Any) -> Any:
         s = _stream()
         if s is None:
             return None
-        # Phase 2: poll for steering comments (input works even with no_stream)
-        steers = _poll_steer_comments(_task_id())
-        steer_ctx = None
-        if steers:
-            joined = "\n".join("- " + x for x in steers)
-            steer_ctx = ("New steering instruction(s) from the operator "
-                         "(delivered mid-task \u2014 adjust your approach):\n" + joined)
-            if not s.no_stream:
-                s.push_error("\u2709\ufe0f Steer received")
+        # Steering delivery belongs to core — Hermes hands every new
+        # non-self task comment to the running worker itself. The plugin
+        # never injects steer text here (each steer used to arrive
+        # twice); the watch only mirrors the stream line.
+        if _watch_steer_comments(_task_id()) and not s.no_stream:
+            s.push_error("\u2709\ufe0f Steer received")
         if s.no_stream:
-            return {"context": steer_ctx} if steer_ctx else None
+            return None
         with _streams_lock:
             has_message = s.message_id is not None or len(s.tool_history) > 0
         if has_message:
             s.push_think()
-        if steer_ctx:
-            return {"context": steer_ctx}
         return None
     except Exception as e:
         log.warning("kanban-stream on_pre_llm_call failed: %s", e)
@@ -510,7 +617,7 @@ def on_pre_llm_call(*args: Any, **kwargs: Any) -> Any:
 def on_post_api_request(task_id: Optional[str] = None,
                        usage: Optional[Dict[str, Any]] = None,
                        **kwargs: Any) -> None:
-    """Accumulate per-request output tokens for tok/s display. Fail-open.
+    """Accumulate per-request output tokens for the total-token display. Fail-open.
 
     NOTE: the hook's task_id kwarg is the SESSION id, not the kanban task
     id — always key the stream by the HERMES_KANBAN_TASK env var.
@@ -563,6 +670,8 @@ def on_task_done(task_id: Optional[str] = None,
 
 
 def register(ctx: Any) -> None:
+    global _profile_name
+    _profile_name = getattr(ctx, "profile_name", None) or "hermes"
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
