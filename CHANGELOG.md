@@ -1,5 +1,15 @@
 # Changelog — hermes-muse-bridge
 
+## 1.6.1 (2026-10-26)
+
+The sharing-polish pass: plugin copies current again, cron templates
+match the post-modulation reality, and a map for first-time visitors.
+
+- **agent-checkpoint plugin copy → v0.3.0** (`plugins/agent-checkpoint/`) — the published build: uncapped-run interval checkpoints, the `config_schema` manifest (19 keys), corrected author metadata; now ships complete with `LICENSE` and `README.md`, plus the `test_uncapped.py` suite file (67 tests against the shipped file).
+- **kanban-stream plugin copy → v1.0.3** (`plugins/kanban-stream/`) — the current release: the stream line reports total output tokens (`9,412 out tok`) instead of a misleading tokens/sec figure. The copy is now the full release tree: `bin/steer.py` (the steering companion daemon), `tests/smoke_test.py`, `LICENSE`, `README.md`, `.env.example`.
+- **Cron templates match the live mechanisms** — `muse-vm/cron-body.md`: the 1-minute inbox-watch cron was retired in the Oct 23 token-burn modulation; the file is now a mechanism note describing the `hermes-inbox-trigger` hook that replaced it (the watcher script is unchanged — only its driver changed). `muse-vm/cron-body-review-sweep.md`: refreshed to the current live 30-minute sweep body. `muse-vm/cron-body-canary.md` verified current against the live hourly job, unchanged.
+- **README "Start here" section** — which of the four public repos (this bridge, muse-pstack, agent-checkpoint, hermes-kanban-stream) to pick for what, with links.
+
 ## 1.6.0 (2026-10-26)
 
 The kanban optimizations since 1.5.0, synced together with the fleet reliability audit that measures them (new `docs/reliability-audit-2026-10-26.md`). The audit's honest read: crashes went 44 → 15 → 0 and the checkpoint trail now exists on every v0.2.0-era failing run — but fleet-only run completion is flat (34.8% → 34.1%) and the 1h chain pieces completed 0 of 23 runs in the AFTER window. The machinery is published with its numbers, not ahead of them.
