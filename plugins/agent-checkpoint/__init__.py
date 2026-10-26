@@ -19,10 +19,16 @@ Design constraints (locked plan 2026-10-21, ``AGENT-CHECKPOINT-PLAN.md``):
 * **Latched per tier, per session.** Each tier fires at most once per run;
   state is keyed by session/run id in a process-local dict so concurrent
   sessions in one gateway process never leak into each other.
-* **No caps → silent no-op.** If no cap is discoverable (kanban board cap,
-  goal ``max_turns``, profile ``agent.max_turns``, or plugin-configured caps)
-  the plugin injects nothing. It never warns against a budget that does not
-  exist.
+* **No caps → no budget warnings, ever.** The plugin never warns against a
+  budget that does not exist: with no discoverable cap it injects nothing.
+  Cap discovery is per dialect — kanban: the board cap, or the
+  ``TERMINAL_TIMEOUT`` derivation; goal: the goal's ``max_turns``, then the
+  profile ``agent.max_turns``; chat: plugin-configured caps (``caps``) or
+  ``agent.run_budget_seconds`` only (a profile ``agent.max_turns`` alone
+  never arms a chat session). Since 0.3.0 a capless run is still not
+  silent on disk: the watchdog persists a checkpoint every
+  ``uncapped_interval_seconds`` (default 1800; 0 disables the fallback)
+  so a long uncapped run leaves a durable record too.
 * **The plugin writes nothing at prologues.** It names the checkpoint file
   in the injected text; the agent writes it.
 * **Mid-run persistence (2026-10-25 fix).** Turn prologues are not the only
@@ -84,11 +90,18 @@ PENULTIMATE_TURNS = 2  # tier 2 fires no later than the penultimate turn
 # Mid-run persistence (2026-10-25 fix): evaluate tiers at tool-call
 # boundaries and from a watchdog thread; on a mid-run crossing the plugin
 # itself persists (checkpoint file + kanban comment). Default ON per
-# The operator's directive — a capped run must not cross silently.
+# Michael's directive — a capped run must not cross silently.
 DEFAULT_MID_RUN_PERSIST = True
 DEFAULT_WATCHDOG = True
 DEFAULT_WATCHDOG_POLL_SECONDS = 10.0
 WATCHDOG_GRACE_SECONDS = 180.0   # watchdog exits at cap + this grace
+
+# Uncapped-run fallback (0.3.0): a run with NO discoverable cap on either
+# axis gets a watchdog-persisted checkpoint every this-many elapsed
+# seconds, so it still leaves a durable record. 1800s = the tier-1 point
+# of the fleet's standard 3600s cap: a capless run's first record lands
+# no later than a capped run's. 0 disables the fallback entirely.
+DEFAULT_UNCAPPED_INTERVAL_SECONDS = 1800.0
 COMMENT_MAX_CHARS = 4000         # kanban comment body cap for persists
 COMMENT_AUTHOR = "agent-checkpoint"
 
@@ -130,6 +143,7 @@ class PluginConfig:
     mid_run_persist: bool = DEFAULT_MID_RUN_PERSIST
     watchdog: bool = DEFAULT_WATCHDOG
     watchdog_poll_seconds: float = DEFAULT_WATCHDOG_POLL_SECONDS
+    uncapped_interval_seconds: float = DEFAULT_UNCAPPED_INTERVAL_SECONDS
 
 
 def _default_config() -> PluginConfig:
@@ -221,6 +235,9 @@ def load_plugin_config() -> PluginConfig:
             watchdog=bool(section.get("watchdog", DEFAULT_WATCHDOG)),
             watchdog_poll_seconds=max(0.05, float(section.get(
                 "watchdog_poll_seconds", DEFAULT_WATCHDOG_POLL_SECONDS))),
+            uncapped_interval_seconds=max(0.0, float(section.get(
+                "uncapped_interval_seconds",
+                DEFAULT_UNCAPPED_INTERVAL_SECONDS))),
         )
     except Exception as exc:  # fail-open: malformed config → defaults
         logger.warning("agent-checkpoint: config load failed (%s); using defaults", exc)
@@ -805,6 +822,9 @@ class SessionLatches:
         #                 "turns": int, "start_mono": float,
         #                 "caps": RunCaps | None, "cfg": PluginConfig | None,
         #                 "run_id": str, "dialect": str,
+        #                 "uncapped_fires": int (interval checkpoints done),
+        #                 "uncapped_commented": bool (first-fire comment
+        #                 attempted; later interval fires are file-only),
         #                 "watchdog_stop": threading.Event | None}
         self._state: Dict[str, dict] = {}
 
@@ -837,6 +857,8 @@ class SessionLatches:
                 "cfg": None,
                 "run_id": "",
                 "dialect": "chat",
+                "uncapped_fires": 0,
+                "uncapped_commented": False,
                 "watchdog_stop": None,
             }
             self._state[key] = st
@@ -1027,6 +1049,95 @@ def _log_only_due(cfg: PluginConfig, caps: RunCaps, plan: TierPlan,
 
 
 # ---------------------------------------------------------------------------
+# Uncapped-run fallback (0.3.0): absolute-time checkpoints when a run has
+# no discoverable cap on either axis, so it still leaves a durable record.
+# ---------------------------------------------------------------------------
+
+def _caps_are_capless(caps: Optional[RunCaps]) -> bool:
+    """True when caps were discovered and NEITHER axis exists — distinct
+    from "not yet discovered" (``caps is None``)."""
+    return (caps is not None and caps.turns_cap is None
+            and caps.time_cap is None)
+
+
+def _uncapped_fallback(cfg: PluginConfig, key: str, session_id: str,
+                       task_id: str, source: str) -> bool:
+    """Persist an interval checkpoint for a capless run when one is due.
+
+    Called from the persist surfaces only (watchdog loop, tool hooks) —
+    never the inject surface: an uncapped run has no budget to frame, and
+    budget text for it would be a lie. Due when the elapsed time crosses
+    the next absolute interval boundary (interval, 2x interval, ...
+    anchored at run start, so poll jitter cannot drift the schedule).
+    The checkpoint file is rewritten at every fire (one path per run —
+    it cannot spam); a kanban comment is posted on the FIRST fire only,
+    later fires are file-only. ``log-only`` mode logs the fire instead.
+    Returns True when a fire happened. Fail-open: any error → False.
+    """
+    try:
+        interval = float(cfg.uncapped_interval_seconds or 0.0)
+        if interval <= 0.0:
+            return False
+        st = LATCHES.get(key)
+        if st is None:
+            return False
+        caps = st.get("caps")
+        if not _caps_are_capless(caps):
+            return False  # undiscovered yet, or capped: tiers own it
+        elapsed = LATCHES.elapsed(key)
+        fires = int(st.get("uncapped_fires", 0))
+        if elapsed < interval * (fires + 1):
+            return False
+        fire_no = fires + 1
+        st["uncapped_fires"] = fire_no  # latch first: one fire per boundary
+        run_id = run_id_for(session_id, task_id)
+        path = checkpoint_path_for(cfg, run_id)
+        if cfg.mode == "log-only":
+            logger.info(
+                "agent-checkpoint [log-only]: uncapped interval "
+                "checkpoint %d due for %s (dialect=%s, source=%s, "
+                "elapsed=%.0fs, interval=%.0fs); checkpoint file would "
+                "be %s",
+                fire_no, key, caps.dialect, source, elapsed, interval,
+                path)
+            return True
+        header = (
+            f"{PLUGIN_ID}: uncapped-run checkpoint {fire_no} persisted "
+            f"(source: {source}). This run has no discoverable turn or "
+            f"time cap, so no budget tiers apply; this checkpoint was "
+            f"persisted on the uncapped interval ({interval:.0f}s) to "
+            f"leave a durable record. Elapsed at persist: "
+            f"{elapsed:.0f}s.")
+        facts = (f"Run: {run_id}\n"
+                 f"Dialect: {caps.dialect}\n"
+                 f"Turns so far: {st.get('turns', 0)}\n"
+                 f"Elapsed: {elapsed:.0f}s\n"
+                 f"Uncapped interval: {interval:.0f}s "
+                 f"(checkpoint {fire_no})")
+        wrote = _write_checkpoint_file(path, f"# {header}\n\n{facts}\n")
+        comment_id = None
+        if caps.dialect == "kanban" and not st.get("uncapped_commented"):
+            # First fallback fire only: latch the attempt (success or
+            # not) so later fires stay file-only and a broken board DB
+            # is not retried every interval.
+            st["uncapped_commented"] = True
+            comment_id = _post_kanban_comment(
+                run_id, (header + "\n\n" + facts)[:COMMENT_MAX_CHARS])
+        logger.info(
+            "agent-checkpoint: uncapped checkpoint %d for %s (dialect=%s, "
+            "turns=%s, elapsed=%.0fs, interval=%.0fs, source=%s, "
+            "file=%s, comment=%s)",
+            fire_no, key, caps.dialect, st.get("turns", 0), elapsed,
+            interval, source, "written" if wrote else "FAILED",
+            comment_id if comment_id is not None else "-")
+        return True
+    except Exception as exc:  # fail-open, always
+        logger.warning("agent-checkpoint: uncapped fallback failed (%s); "
+                       "no-op", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Watchdog (backstop for a run parked inside one long tool call)
 # ---------------------------------------------------------------------------
 
@@ -1064,7 +1175,14 @@ def _ensure_watchdog(key: str, session_id: str, task_id: str,
 
 def _watchdog_loop(key: str, session_id: str, task_id: str,
                    stop: threading.Event) -> None:
-    """Poll the tier plan until the run ends or cap + grace passes."""
+    """Poll the tier plan until the run ends or cap + grace passes.
+
+    Also drives the uncapped-run fallback: a session whose caps are
+    discovered and capless gets an interval checkpoint per
+    ``uncapped_interval_seconds`` — and when that fallback is OFF (0),
+    a capless session can never fire anything, so the loop exits on
+    its first poll instead of polling for the session's whole life.
+    """
     try:
         while not stop.is_set():
             cfg = load_plugin_config()
@@ -1074,6 +1192,14 @@ def _watchdog_loop(key: str, session_id: str, task_id: str,
             if st is None:
                 return  # session state gone (ended / evicted)
             caps = st.get("caps")
+            if caps is None:
+                # Discover once (cached on the state by _run_context)
+                # so the capless checks below see this run's real caps
+                # even when no evaluation has run yet.
+                caps, _rid = _run_context(session_id, task_id, cfg, key)
+            if (_caps_are_capless(caps)
+                    and float(cfg.uncapped_interval_seconds or 0.0) <= 0.0):
+                return  # capless + fallback off: nothing can ever fire
             if caps is not None and caps.time_cap:
                 if (LATCHES.elapsed(key)
                         > float(caps.time_cap) + WATCHDOG_GRACE_SECONDS):
@@ -1088,6 +1214,9 @@ def _watchdog_loop(key: str, session_id: str, task_id: str,
                     else:
                         _persist(ecfg, ecaps, plan, key, session_id,
                                  task_id, "watchdog", LATCHES.elapsed(key))
+                else:
+                    _uncapped_fallback(cfg, key, session_id, task_id,
+                                       "watchdog")
             stop.wait(cfg.watchdog_poll_seconds)
     except Exception as exc:  # fail-open, always
         logger.warning("agent-checkpoint: watchdog for %s exited: %s",
@@ -1175,6 +1304,10 @@ def _tool_hook(session_id: str, task_id: str, source: str) -> None:
         _ensure_watchdog(key, session_id, task_id, cfg)
         result = _evaluate(session_id, task_id, cfg, "persist")
         if result is None:
+            # No tier due — the only remaining persist this surface can
+            # owe is an uncapped-interval checkpoint (capless runs get
+            # no tier plan at all). No-op for capped runs.
+            _uncapped_fallback(cfg, key, session_id, task_id, source)
             return
         ecfg, caps, plan, key = result
         if ecfg.mode == "log-only":
