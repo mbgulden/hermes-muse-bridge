@@ -1,5 +1,18 @@
 # Changelog — hermes-muse-bridge
 
+## 1.6.0 (2026-10-26)
+
+The kanban optimizations since 1.5.0, synced together with the fleet reliability audit that measures them (new `docs/reliability-audit-2026-10-26.md`). The audit's honest read: crashes went 44 → 15 → 0 and the checkpoint trail now exists on every v0.2.0-era failing run — but fleet-only run completion is flat (34.8% → 34.1%) and the 1h chain pieces completed 0 of 23 runs in the AFTER window. The machinery is published with its numbers, not ahead of them.
+
+- **Sizing standard rewrite (skill, "What's too big")** — human-equivalent time is now the primary size measure: author pieces a competent human could finish in 10–20 minutes, hard-split anything over ~30; agent turns are demoted to a backstop and the authoring test changed to match. The calibration bullet is updated, and the retry ladder gains an **advisor consult at the second failure** (a stronger-model reviewer consult over the worker's artifacts before any third run).
+- **Generation tasks chain by artifact (skill)** — a multi-artifact generation task is never authored as one shot: chained pieces, one artifact each, with build and proof as separate pieces (A1 build-only → A2 proof-only → B docs/map → C drive + assemble + commit), 1h caps, gated mechanically by the new checker below.
+- **Evidence update (skill)** — verify every ~10 dependent steps; criteria are pre-registered and not worker-editable, and code tasks carry a success command plus a regression (pass-to-pass) command the reviewer re-runs; chains stay sequential (≤~6 verified pieces per parent goal); checkpoints belong at verified boundaries; every task body carries a human-equivalent estimate, logged against actuals.
+- **§2 routing additions (skill)** — **restate-first**: investigation, bug-fix, and report-driven tasks open with an in-your-own-words restatement posted as the worker's first comment. **Verify-first**: test/audit/reproduce/review tasks run the project's proven verify skill and its doctor first; a missing verify skill is stated plainly in the body and surfaces as a finding.
+- **§5c compliance pack (skill)** — once per sweep day, the review sweep runs the fleet-compliance checker and names new silent exits in the run report; the weekly count feeds the reliability audit.
+- **check-task-size.py (new, beside the skill)** — the mechanical gate behind the sizing standard: multi-artifact bundles, build+proof bundles, missing or oversized human-equivalent estimates, acceptance-criteria counts, missing regression commands. Run on every task body before creation; a FAIL means decompose first.
+- **agent-checkpoint plugin v0.2.0 (new, `plugins/agent-checkpoint/`)** — mid-run budget persistence: beyond the `pre_llm_call` reminders, the plugin evaluates at tool-call boundaries and via a per-session watchdog thread, and persists the checkpoint itself (checkpoint file + kanban comment) at its 50% / 80% budget tiers, so single-turn runs cannot cross their budget silently. Ships with its test suite (`tests/` + the test-only `agent_checkpoint` import shim; 60 tests passing against the shipped file).
+- **Checkers (new, `muse-vm/checkers/`)** — the prose-to-checkers stack: `check-copy`, `check-leaks`, `check-okf-sync`, `check-port`, `check-pr-evidence`, `check-uncommitted`, `fleet-compliance`, `grade-verify-cli`, plus the task-size specimen set (`tests-task-size/`) and example operator-data files (`copy-allowlist.example.txt`, `repo-registry.example.tsv` — format examples only; the operator's real files are not published).
+
 ## 1.5.0 (2026-10-24)
 
 The §5c review-sweep procedure gains the two playbook-adoption steps:
