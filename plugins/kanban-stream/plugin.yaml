@@ -1,5 +1,25 @@
 name: kanban-stream
-version: "1.0.0"
-description: "Stream kanban worker activity to Telegram ops channel; Phase 2: steering via task comments"
+version: "1.0.3"
+description: >-
+  Stream live kanban worker activity to a Telegram ops channel — one
+  edit-in-place message per task with rolling tool history, elapsed timer,
+  total output tokens, final-state pin, and mid-task /steer steering via task
+  comments.
 author: "Michael Gulden"
-enabled_by_default: true
+license: MIT
+homepage: https://github.com/mbgulden/hermes-kanban-stream
+requires_hermes: ">=0.20.5"
+requires_env:
+  - KANBAN_STREAM_BOT_TOKEN
+  - KANBAN_STREAM_ALLOWED_USERS
+provides_tools: []
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
+  - post_api_request
+  - kanban_task_completed
+  - kanban_task_blocked
+# Deliberately off by default: the plugin makes network calls to Telegram
+# and is only useful when the KANBAN_STREAM_* credentials are configured.
+enabled_by_default: false
