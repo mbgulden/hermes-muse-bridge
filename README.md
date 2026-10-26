@@ -1,6 +1,6 @@
 # hermes-muse-bridge
 
-**Version 1.5.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
+**Version 1.6.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
 
 Two-way integration between [Hermes](https://github.com/NousResearch/hermes-agent) (local AI agent orchestrator) and [Muse.ai](https://muse.ai) (your AI assistant). Assign kanban tasks to Muse, get them done, get notified.
 
@@ -67,7 +67,9 @@ See [INSTALL.md](INSTALL.md) for the full walkthrough.
 | `muse-vm/fleet-canary.sh` | Muse VM | Hourly end-to-end probe of the box → tunnel → listener → inbox path |
 | `skills/call-muse/` | Hermes profiles | Lets Hermes agents ask Muse for reviews/judgments |
 | `skills/muse-kanban-worker/` | Muse VM | Documents the worker loop for Muse |
-| `skills/hermes-kanban-tasks/` | Muse VM | Task authoring: sizing, acceptance criteria, timed-run clauses, review gates |
+| `skills/hermes-kanban-tasks/` | Muse VM | Task authoring: sizing, acceptance criteria, timed-run clauses, review gates, and the mechanical task-size checker |
+| `plugins/agent-checkpoint/` | Hermes box | Budget checkpoints for long runs: persists the checkpoint itself (file + kanban comment) at 50% / 80% of a run's budget — tool-boundary hooks + a watchdog thread, so single-turn runs can't cross their budget silently. Ships with its test suite |
+| `muse-vm/checkers/` | Muse VM | The prose-to-checkers stack: mechanical gates for copy, leaks, OKF sync content, port quality, PR evidence, uncommitted work, fleet compliance, and verify-CLI grading, plus the task-size specimen set and example operator-data files |
 
 ## Transports
 
@@ -93,6 +95,7 @@ This bridge is built for how Muse.ai works:
 - [INSTALL.md](INSTALL.md) — Step-by-step setup
 - [ARCHITECTURE.md](ARCHITECTURE.md) — How the pieces fit together
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — Common issues and fixes
+- [docs/reliability-audit-2026-10-26.md](docs/reliability-audit-2026-10-26.md) — Fleet reliability audit (Oct 26, 2026): what the checkpoint and sizing levers measurably did, with the honest numbers
 
 ## License
 
