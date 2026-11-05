@@ -36,6 +36,7 @@ The worker knows nothing about your project. Include:
 - **References**: links, file paths, or prior task IDs they should read first
 - **Playbook routing (Oct 23, 2026)**: when the work type matches a pstack playbook deployed on the fleet, name it in the body as a Method line — measurement (Oct 23) showed the passive SOUL.md mention produced ~0 loads in 289 sessions; the task body is the routing surface that works. Map: defect fix → `pstack-bug-fix`; performance problem → `pstack-perf-issue`; review / investigation / verdict → `pstack-interrogate`; contested design choice → `pstack-arena` (generalist profile only); fan-out research → `pstack-swarm` (generalist profile only). Write it as: "Method: work this under the pstack-bug-fix playbook — load that skill first." One playbook per task; when none matches, no line.
 - **Restate-first routing (Oct 24, 2026)**: for investigation, bug-fix, and report-driven tasks (a forwarded message, a user report, an ambiguous failure), the body MUST require the worker to load `pstack-in-your-own-words` and post its restatement of the problem — goal, underlying issue, what done looks like, no hypotheses smuggled in — as its first comment before any other work. The reviewer reads the restatement at review; a wrong restatement is a finding about the task, not just the worker.
+- **Audit-type routing (Nov 4, 2026)**: audit and verification-type tasks — corpus/data verification, compute audits, check-suite builds, independent verifications — are assigned to `muse` (reviewer-direct) every time, never to the fleet profiles. The fleet models grind on transcription-and-cross-check work (2h cap timeouts, quota deaths); the one corpus vector that finished clean did so as a muse task. If a task's core work is checking, auditing, or verifying rather than building, its assignee is `muse` at authoring time.
 - **Verify-first routing (Oct 24, 2026)**: for any task that tests, audits, reproduces, or reviews a project's behavior, check the verify-skill registry before writing the body. If the project has a proven verify skill, the body MUST name it and its doctor command, and require: doctor runs first (a red doctor is the first finding), driving happens through the project's control CLI, and the report quotes the doctor output + evidence paths. If the project has no verify skill yet, the body states that plainly and the gap is a finding in the report — never silently improvise a one-off harness when a rollout task for that project already exists in the rollout manifest. Full standard: the verify-rollout handbook.
 
 ```bash
@@ -77,6 +78,35 @@ Bad:
 ```
 
 Put acceptance criteria **in the task body** (the worker reads the body; there's no separate AC field). Mark them clearly with an `ACCEPTANCE CRITERIA:` header so they're unmissable.
+
+### 3c. Iterative work — name the loop in the body (Nov 4, 2026)
+
+A task whose deliverable is built iteratively — several versions converging
+on a reference, a spec, or an approved baseline (renders, ports, migrations,
+generated artifacts, reconstructions) — carries four extra named items in its
+body, next to the acceptance criteria:
+
+1. **The frozen spec** — the one file that is the source of truth for what
+   the deliverable must be (path). Builders and checkers reference it; no
+   second copy of its values lives in the task body or the code.
+2. **The fixture/coverage set** — the fixtures the loop runs against, with
+   the coverage argument (which element classes and states appear where) and
+   the step that verifies fixture data against its source before the first
+   build.
+3. **The standing category checks** — where the work's category-check list
+   lives (audit script, check list, verification skill). Every defect the
+   loop or a reviewer finds gets classified; a class-level find becomes a
+   named check there, not only a fix.
+4. **The version-metrics file** — path of the file that gets one row per
+   version: diff items found/fixed, the trend number where one exists, and
+   who caught each defect (worker / reviewer / owner).
+
+The body also points the worker at `pstack-loop-discipline` (installed in
+every fleet profile) as the method. A body missing any of the four is
+under-specified the same way a copy task without a brief is.
+Reviewers judge iterative work against the metrics file as well as the
+deliverable: versions-to-clean and the who-caught split are part of the
+verdict.
 
 ### 4. Deliverable location
 
@@ -203,6 +233,18 @@ retry-ladder gate with no successor yet. Review at most 2 per run, oldest
 first, salvage-first per §5b (deliverable → workspace → comments →
 evidence), verified mechanically.
 
+**Ready-starvation (Nov 4, 2026 — Nov 4 board audit).** A task in `ready`
+for >2h with no claim is a stall even when the fleet is busy — the
+per-profile serial queue starves new work behind cap-burning retries
+(evidence: an interactive task sat ready 3.2h unclaimed, board diagnostic
+"critical", no recovery rung acted; 10 ready tasks aged 3–7h the same
+night). The sweep ACTS in-pass: audit/verification-type tasks are
+reassigned to `muse` (standing audit-routing rule, §2); build tasks whose
+assignee's endpoint is dead or whose queue is blocked behind a running
+cap-burn are reassigned to a profile that can start them, or commented
+with the named blocker and carried in the sweep report as an outcome.
+Detection without action is the failure this rule exists to end.
+
 **Acting on the verdict.**
 - Complete and criteria met: full findings as a comment, then complete
   with a one-line `--result`.
@@ -215,6 +257,16 @@ evidence), verified mechanically.
   successor; comment "ESCALATED TO REVIEWER-DIRECT — 3 failed attempts across
   this lineage (name the run ids). No fourth retry will be queued; the reviewer
   executes this personally." and record action `escalated_reviewer_direct`.
+TWO-FULL-CAP SHAPE RULE (Nov 4, 2026 — Nov 4 board audit): when a
+lineage's last 2 runs each burned ≥80% of their runtime cap with no
+proven deliverable, the shape is the failure, not the worker — no
+same-shape successor at any strike count. The successor must be
+split smaller or routed to `muse`. (Evidence: 111 of 290 failed
+runs board-wide burned ≥110 min = 335 of 461 failed hours; the
+deliverable in those lineages came from a re-scoped successor or a
+reviewer-direct salvage, not from the burned runs.) The sweep records
+failed run-hours per lineage in the state-file record, and the
+Friday ledger review reports them.
   Under 3: author the successor under the smaller-tasks rules — one
   deliverable per task, 1h cap for narrow proofs (2h otherwise), the
   DELIVERABLE-FIRST + REPORT-BEFORE-TIMEOUT clauses from §5 verbatim,
