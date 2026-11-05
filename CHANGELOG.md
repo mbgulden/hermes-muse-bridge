@@ -1,5 +1,13 @@
 # Changelog — hermes-muse-bridge
 
+## 1.6.2 (2026-11-04)
+
+The Nov 4, 2026 kanban rules, synced from the live skill (`skills/hermes-kanban-tasks/SKILL.md` only — no new files, no component changes):
+
+- **§3c iterative work (skill)** — a task whose deliverable is built iteratively (renders, ports, migrations, generated artifacts, reconstructions) now carries four extra named items in its body, next to the acceptance criteria: the frozen spec, the fixture/coverage set, the standing category checks, and the version-metrics file — and points the worker at `pstack-loop-discipline` as the method. A body missing any of the four is under-specified.
+- **§2 audit-type routing (skill)** — audit and verification-type tasks (corpus/data verification, compute audits, check-suite builds, independent verifications) are assigned to `muse` (reviewer-direct) every time, never to the fleet profiles.
+- **§5c ready-starvation + TWO-FULL-CAP SHAPE RULE (skill)** — a task in `ready` for >2h with no claim is a stall the sweep ACTS on in-pass (audit tasks reassigned to `muse`; build tasks reassigned to a profile that can start them, or commented with the named blocker). And when a lineage's last 2 runs each burned ≥80% of their runtime cap with no proven deliverable, no same-shape successor at any strike count — the successor must be split smaller or routed to `muse`.
+
 ## 1.6.1 (2026-10-26)
 
 The sharing-polish pass: plugin copies current again, cron templates
