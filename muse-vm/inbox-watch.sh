@@ -28,18 +28,6 @@ if [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
-# Lockfile: overlapping cron instances used to abort each other silently at
-# the SSH wall probe (observed in production — two runs exited mid-run when a
-# transport flap hit both at once). flock on a held fd means a second
-# instance exits quietly instead of interleaving.
-LOCKFILE="$HOME/workspace/inbox/.watch.lock"
-mkdir -p "$HOME/workspace/inbox"
-exec 9>"$LOCKFILE"
-if ! flock -n 9; then
-  # Another run is in progress; stay silent, cron retries next minute.
-  exit 0
-fi
-
 TRANSPORT="${BRIDGE_TRANSPORT:-tailscale-ssh}"
 BOX_HOME="${BRIDGE_BOX_HOME:-/home/ubuntu/.hermes}"
 ASSIGNEE="${BRIDGE_ASSIGNEE:-muse}"
@@ -70,9 +58,7 @@ log() {
 # Self-healing HTTP listener check
 if ! curl -s -m 3 http://127.0.0.1:8899/health | grep -q '"ok"'; then
   log "listener down — restarting"
-  # 9>&-: close the flock fd before spawning, so the listener can't inherit
-  # the watch lock and wedge every later run.
-  ~/workspace/bin/ensure-listener.sh 9>&-
+  ~/workspace/bin/ensure-listener.sh
 fi
 
 log "=== watch run start ==="
@@ -106,34 +92,22 @@ except Exception as e:
 done
 [ "$push_count" -gt 0 ] && log "kanban-push: processed $push_count file(s)"
 
-# ── SSH probe: if the SSH transport hits an interactive re-auth wall
+# ── SSH wall probe: if the SSH transport hits an interactive re-auth wall
 # (e.g. the Tailscale SSH "check" action), every remote step below would
 # mis-parse the wall message as data and abort mid-run under set -o pipefail.
 # Detect it once, log the login URL, and skip remote steps this run. The
 # local tunnel-push inbox (Step 1) already ran above. Transports that never
-# print a login URL (direct-ssh, localhost) make the wall check a no-op.
-# The probe ALSO captures the SSH command's exit code: a non-wall transport
-# failure (proxy flap, timeout) used to sail through the URL-only check, and
-# every remote step then mis-parsed the error text as data, aborting mid-run
-# with garbage ids entering the inbox loop. Any non-zero probe exit now
-# skips the remote steps cleanly.
-PROBE_RC=0
-PROBE_OUT=$($MWH "true" 2>/dev/null) || PROBE_RC=$?
-WALL_URL=$(printf '%s' "$PROBE_OUT" | grep -o 'https://login\.tailscale\.com/a/[A-Za-z0-9]*' | head -1 || true)
+# print a login URL (direct-ssh, localhost) make this a no-op.
+WALL_URL=$($MWH "true" 2>/dev/null | grep -o 'https://login\.tailscale\.com/a/[A-Za-z0-9]*' | head -1 || true)
 if [ -n "$WALL_URL" ]; then
   log "SSH wall up — skipping remote steps (inbox, kanban tail, worker). Re-auth required: $WALL_URL"
   log "=== watch run end (wall) ==="
   exit 0
 fi
-if [ "$PROBE_RC" -ne 0 ]; then
-  log "SSH transport down (probe rc=$PROBE_RC) — skipping remote steps (inbox, kanban tail, worker) this run"
-  log "=== watch run end (transport) ==="
-  exit 0
-fi
 
 # ── Step 2: Agent inbox ──
 # List request files on the box
-FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep '\.md$' | grep -v "Warning:" || true)
+FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep -v "Warning:" || true)
 
 if [ -z "$FILES" ]; then
   log "no requests"
@@ -191,7 +165,7 @@ for f in $FILES; do
     echo ""
     case "$TYPE" in
       escalation)
-        echo "Escalation received. Muse will surface this to the user in chat."
+        echo "Escalation received. Muse will surface this to Michael in chat."
         echo ""
         echo "Handler v1: automatic escalation routing is not yet implemented."
         echo "The request has been logged and will be reviewed."
@@ -200,7 +174,7 @@ for f in $FILES; do
         echo "Question received. Handler v1 does not auto-answer questions yet."
         echo ""
         echo "Your question has been logged. Your Muse agent will review and respond,"
-        echo "or route it to the user if it needs their input."
+        echo "or route it to Michael if it needs his input."
         ;;
       judgment)
         echo "Judgment request received. Handler v1 does not auto-judge yet."
@@ -326,6 +300,21 @@ for brief in "$LOCAL_WORK"/muse-task-*.md; do
     continue
   fi
 
+  # Claim-loop guard: the failure ladder below is only for a worker that is
+  # actually holding the task (status 'running') and went silent. If the
+  # claim already expired (status ready/todo), the brief is simply queued
+  # work — leave it in place and count no failure. Terminal states just
+  # need the brief cleaned up.
+  if [ "$TASK_STATUS" != "running" ]; then
+    if [ "$TASK_STATUS" = "done" ] || [ "$TASK_STATUS" = "blocked" ] || [ "$TASK_STATUS" = "archived" ]; then
+      log "kanban-worker: $tid is $TASK_STATUS — dropping brief (terminal)"
+      rm -f "$brief"
+    else
+      log "kanban-worker: $tid claim expired (status $TASK_STATUS) — brief stays queued, no failure counted"
+    fi
+    continue
+  fi
+
   log "kanban-worker: task $tid has no .done after ${brief_age}s — treating as failed"
   $MWH "python3 << 'PYEOF'
 import sqlite3
@@ -335,7 +324,7 @@ fails = (row[0] or 0) + 1 if row else 1
 if fails >= 3:
     db.execute(\"UPDATE tasks SET status='blocked', consecutive_failures=? WHERE id = ?\", (fails, '$tid'))
     db.execute(\"INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'blocked', ?, strftime('%s','now'))\",
-               ('$tid', '{\"reason\": \"3 consecutive failures, escalated to the user\"}'))
+               ('$tid', '{\"reason\": \"3 consecutive failures, escalated to Michael\"}'))
     print(f'BLOCKED $tid after {fails} failures')
 else:
     db.execute(\"UPDATE tasks SET status='todo', consecutive_failures=? WHERE id = ?\", (fails, '$tid'))
@@ -402,6 +391,16 @@ with open(os.path.join(LOCAL_WORK_DIR, "muse-tasks.json")) as f:
 for t in tasks:
     tid = t["id"]
     title = t.get("title", "?")
+    # Claim-loop guard: never re-claim a task whose brief is already
+    # outstanding. The claim TTL (900s) is shorter than the time a queued
+    # task may wait for pickup, so without this skip the watcher re-claims
+    # and re-briefs the same tasks every ~15 minutes forever, holding them
+    # in 'running' and eating dispatcher concurrency slots.
+    _brief = os.path.join(WORK_DIR, f"muse-task-{tid}.md")
+    _done = os.path.join(WORK_DIR, f"muse-task-{tid}.done")
+    if os.path.exists(_brief) and not os.path.exists(_done):
+        print(f"kanban-worker: brief already outstanding for {tid} — skipping re-claim")
+        continue
     if t.get("status") == "review":
         # Review task: do NOT claim (the CLI refuses claims on review tasks).
         # Write a REVIEW brief; the reviewer verifies independently and
