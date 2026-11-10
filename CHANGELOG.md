@@ -1,5 +1,32 @@
 # Changelog — hermes-muse-bridge
 
+## 1.8.0 (2026-11-09)
+
+The muse-standard migration. Michael's standing standard — set when the
+repo was created (2026-10-19) and restored by his call on 2026-11-09 — is
+that everything in the bridge carries the `muse` name. v1.7.0 had
+canonized the deployment's drifted `jimmy` naming; this release reverses
+that and the live deployment migrated to match, the same evening.
+
+- **Defaults flipped:** `BRIDGE_NAME_PREFIX` defaults to `muse` and
+  `BRIDGE_ASSIGNEE` to `muse`. Inbox `muse-inbox`, briefs `muse-task-*`,
+  responses written `from: muse`.
+- **Renamed:** systemd units `muse-listener` / `muse-tunnel` (+ their
+  templates), `install-muse-units.sh`, the `muse-units-ensure` hook
+  script, the box events daemon (writes `muse-inbox`, reads
+  `muse-listener-port`), the listener heartbeat file, and the fleet
+  skill — `call-muse` in every profile, matching this repo.
+- **Legacy drain:** briefs written under the old prefix keep working
+  until they complete — `BRIDGE_LEGACY_PREFIX` (default `jimmy`) feeds
+  the claim guard and the retry loop, and the wake hook globs both
+  prefixes. On the reference deployment the old inbox path is a symlink
+  into `muse-inbox` for the transition. The drain code comes out in
+  v1.9 once no legacy briefs remain.
+- **Live cutover verified end to end:** inbox moved with zero lost
+  files, daemon restarted on the new code (event flow confirmed), units
+  cut over with work-guard re-registered under the new names, fleet
+  canary passing on the new path.
+
 ## 1.7.0 (2026-11-09)
 
 The drift reconcile: the repository now matches the deployment it describes.
