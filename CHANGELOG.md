@@ -1,5 +1,11 @@
 # Changelog — hermes-muse-bridge
 
+## 1.6.3 (2026-11-09)
+
+Watcher hotfix from production use:
+
+- **A frontmatter-less inbox request can no longer kill the watcher** (`muse-vm/inbox-watch.sh`) — the inbox step parsed each request's `type:`/`from:` frontmatter with an unguarded `grep` inside a command substitution. Under `set -euo pipefail`, a request file with no frontmatter (a free-form markdown note) made the grep exit non-zero and ended every watcher run at that file — silently, before the kanban event tail and the task-claim section ever ran. One such request froze task claiming for ~36 hours (Nov 8–9, 2026); the only log trace was the same `processing <id>` line each run, with no `watch run end` after it. The parse is now guarded (`|| true`) with defaults (`type=request`, `from=unknown`), so a parse miss degrades to the generic handler instead of ending the run. TROUBLESHOOTING.md gains the failure mode, its checks, and the immediate unblock for older versions.
+
 ## 1.6.2 (2026-11-04)
 
 The Nov 4, 2026 kanban rules, synced from the live skill (`skills/hermes-kanban-tasks/SKILL.md` only — no new files, no component changes):
