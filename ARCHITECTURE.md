@@ -16,7 +16,7 @@ Kanban DB (box)
     │
     ▼ (2s poll)
 kanban-events-daemon.py (box)
-    ├──▶ Write JSON file ──▶ ~/.hermes/muse-inbox/kanban-events/<id>.json
+    ├──▶ Write JSON file ──▶ ~/.hermes/jimmy-inbox/kanban-events/<id>.json
     │                          │
     │                          ▼ (Muse polls via SSH, 1 min)
     │                     inbox-watch.sh picks it up
@@ -40,7 +40,7 @@ Kanban task assigned to "muse" (status: todo/ready)
 Muse claims task → status: running
     │
     ▼
-Writes brief → ~/workspace/inbox/work/muse-task-<id>.md
+Writes brief → ~/workspace/inbox/work/jimmy-task-<id>.md
     │
     ▼ (cron worker)
 Spawns subagent (max 3 concurrent, priority-ordered)
@@ -102,7 +102,7 @@ Tunnel not needed — listener on localhost:8899 directly.
 Single daemon replacing the earlier split design. One poll loop, three outputs.
 
 - **Poll:** `SELECT * FROM task_events WHERE id > watermark ORDER BY id ASC` every 2s
-- **Watermark:** `~/.hermes/muse-inbox/kanban-events/.watermark` (crash-safe, per-event advance)
+- **Watermark:** `~/.hermes/jimmy-inbox/kanban-events/.watermark` (crash-safe, per-event advance)
 - **PID guard:** Won't start a second instance
 - **@reboot cron:** Survives box restarts
 
@@ -139,8 +139,8 @@ The orchestrator. Runs every minute via Muse cron.
 Lets Hermes agents request help from Muse. File-based (not HTTP):
 
 ```
-Agent writes → ~/.hermes/muse-inbox/requests/<id>.md
-Muse polls, processes, writes → ~/.hermes/muse-inbox/responses/<id>.response.md
+Agent writes → ~/.hermes/jimmy-inbox/requests/<id>.md
+Muse polls, processes, writes → ~/.hermes/jimmy-inbox/responses/<id>.response.md
 Agent polls for response
 ```
 
