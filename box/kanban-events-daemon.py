@@ -2,11 +2,11 @@
 """kanban-events-daemon: unified kanban event processor for Hermes.
 
 Tails task_events in kanban.db (2s poll, read-only) and for each new event:
-  1. Writes JSON to ~/.hermes/jimmy-inbox/kanban-events/<event_id>.json (atomic)
-  2. POSTs to Jimmy's listener via reverse tunnel (best-effort, non-blocking)
+  1. Writes JSON to ~/.hermes/muse-inbox/kanban-events/<event_id>.json (atomic)
+  2. POSTs to Muse's listener via reverse tunnel (best-effort, non-blocking)
   3. Sends Telegram notification via Autobot bot IF kind in NOTIFY_KINDS
 
-Replaces the two separate daemons (kanban-jimmy-push.py + kanban-telegram-notify.py)
+Replaces the two separate daemons (kanban-muse-push.py + kanban-telegram-notify.py)
 with a single poll loop. One watermark, one PID file, one log.
 
 WHY A DAEMON (not a gateway hook):
@@ -32,16 +32,16 @@ import urllib.error
 
 HERMES_HOME = os.path.expanduser("~/.hermes")
 DB_PATH = os.path.join(HERMES_HOME, "kanban.db")
-OUT_DIR = os.path.join(HERMES_HOME, "jimmy-inbox", "kanban-events")
+OUT_DIR = os.path.join(HERMES_HOME, "muse-inbox", "kanban-events")
 WATERMARK_FILE = os.path.join(OUT_DIR, ".watermark")
 PID_FILE = os.path.join(OUT_DIR, ".pid")
 LOG_FILE = os.path.join(HERMES_HOME, "logs", "kanban-events-daemon.log")
 STREAMOPS_ENV = os.path.join(HERMES_HOME, "profiles", "streamops", ".env")
 POLL_SECONDS = 2
 
-# Jimmy's listener via reverse SSH tunnel (port rotates; see jimmy-listener-port)
-JIMMY_PORT_FILE = "/home/ubuntu/.hermes/jimmy-listener-port"
-JIMMY_PORT_DEFAULT = 18991
+# Muse's listener via reverse SSH tunnel (port rotates; see muse-listener-port)
+MUSE_PORT_FILE = "/home/ubuntu/.hermes/muse-listener-port"
+MUSE_PORT_DEFAULT = 18991
 
 # Phase 2: steering via /steer (see steer_handler.py)
 try:
@@ -51,13 +51,13 @@ except Exception as _e:
     _STEER_AVAILABLE = False
     _STEER_IMPORT_ERROR = str(_e)
 
-def jimmy_listener_url():
+def muse_listener_url():
     try:
-        with open(JIMMY_PORT_FILE) as f:
+        with open(MUSE_PORT_FILE) as f:
             port = int(f.read().strip())
             return f"http://localhost:{port}/kanban-event"
     except Exception:
-        return f"http://localhost:{JIMMY_PORT_DEFAULT}/kanban-event"
+        return f"http://localhost:{MUSE_PORT_DEFAULT}/kanban-event"
 
 # Event kinds that trigger a Telegram notification
 NOTIFY_KINDS = {"completed", "blocked", "crashed", "failed", "gave_up", "claimed"}
@@ -144,12 +144,12 @@ def send_telegram(bot_token, chat_id, text):
         return False
 
 
-def post_to_jimmy(payload):
-    """POST event to Jimmy's listener via tunnel. Best-effort; file is primary."""
+def post_to_muse(payload):
+    """POST event to Muse's listener via tunnel. Best-effort; file is primary."""
     try:
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
-            jimmy_listener_url(), data=data, method="POST",
+            muse_listener_url(), data=data, method="POST",
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -179,8 +179,8 @@ def process_event(event_id, task_id, kind, created_at, title, status, assignee,
             json.dump(payload, f)
         os.replace(tmp, path)
 
-    # 2. POST to Jimmy's listener (secondary, best-effort)
-    post_to_jimmy(payload)
+    # 2. POST to Muse's listener (secondary, best-effort)
+    post_to_muse(payload)
 
     # 3. Telegram notification for significant kinds (with dedup)
     if kind in NOTIFY_KINDS and bot_token and chat_id:
