@@ -1,6 +1,6 @@
 # hermes-muse-bridge
 
-**Version 1.7.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
+**Version 1.8.0** — see [CHANGELOG.md](CHANGELOG.md) for what's new.
 
 Two-way integration between [Hermes](https://github.com/NousResearch/hermes-agent) (local AI agent orchestrator) and [Muse.ai](https://muse.ai) (your AI assistant). Assign kanban tasks to Muse, get them done, get notified.
 
@@ -73,7 +73,7 @@ See [INSTALL.md](INSTALL.md) for the full walkthrough.
 | `muse-vm/inbox-watch.sh` | Muse VM | Polls box for requests, claims tasks, handles retries |
 | `muse-vm/hermes-inbox-trigger.sh` | Muse VM | Hook: runs the watcher every ~60s, wakes an agent only on items needing judgment |
 | `muse-vm/inbox-trigger-prompt.md` | Muse VM | The wake prompt for the inbox-trigger hook |
-| `muse-vm/jimmy-units-ensure.sh` | Muse VM | Hook: keeps the systemd units installed/active; recovery anchor after VM replacements |
+| `muse-vm/muse-units-ensure.sh` | Muse VM | Hook: keeps the systemd units installed/active; recovery anchor after VM replacements |
 | `muse-vm/units-ensure-prompt.md` | Muse VM | The wake prompt for the units-ensure hook |
 | `muse-vm/branch-protection-tripwire.sh` | Muse VM | Hook: wakes an agent only when the branch-protection check trips or breaks |
 | `muse-vm/tripwire-prompt.md` | Muse VM | The wake prompt for the tripwire hook |
