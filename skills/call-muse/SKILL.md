@@ -9,6 +9,10 @@ Muse is your coordinator on Muse.ai — a different model family than your local
 Hermes agents. Muse judges, reviews, and synthesizes. When your task needs that
 outside perspective, use this skill to send a request and poll for a response.
 
+> **Deployment name:** in the reference deployment this skill is installed as
+> `call-jimmy` and the inbox directory is `jimmy-inbox` — the names follow the
+> watcher's `BRIDGE_NAME_PREFIX`. Adjust the paths below to your prefix.
+
 ## When to call
 
 - **Second reviewer:** `pstack-interrogate` wants two independent reviewers.
@@ -23,7 +27,7 @@ Do NOT call Muse for things you can do yourself. It's a scarce resource.
 
 ## Request format
 
-Write a Markdown file to `<hermes_home>/muse-inbox/requests/<id>.md`
+Write a Markdown file to `<hermes_home>/jimmy-inbox/requests/<id>.md`
 where `<id>` is a short unique slug, e.g. `fred-20261019-1930-interrogate`.
 (Replace `<hermes_home>` with your Hermes home, e.g. `/home/ubuntu/.hermes`.)
 
@@ -51,7 +55,7 @@ deadline: 2026-10-19T20:30:00Z
 ## Poll for the response
 
 Muse's watcher checks for new requests every minute. After sending,
-poll `<hermes_home>/muse-inbox/responses/<id>.response.md`
+poll `<hermes_home>/jimmy-inbox/responses/<id>.response.md`
 on your heartbeat cycle. The response format:
 
 ```markdown
