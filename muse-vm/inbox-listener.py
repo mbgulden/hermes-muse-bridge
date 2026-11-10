@@ -42,7 +42,7 @@ LOG_FILE = os.path.join(INBOX, "listener.log")
 
 # Heartbeat for the work-guard failsafe (see docs/WORK-GUARD.md) — keeps the failsafe from
 # logging a bogus RESTART every 15 minutes. Guard only checks mtime.
-HEARTBEAT_FILE = os.path.join(WORKSPACE, ".work-heartbeat-jimmy-inbox-listener")
+HEARTBEAT_FILE = os.path.join(WORKSPACE, ".work-heartbeat-muse-inbox-listener")
 HEARTBEAT_INTERVAL_S = 300
 
 # Event IDs are used as filenames — reject anything that could escape the dir.
