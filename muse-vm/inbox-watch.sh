@@ -71,6 +71,7 @@ ASSIGNEE_SQL=$(printf "'%s', " $(echo "$ASSIGNEES" | tr ',' ' ') | sed 's/, $//'
 
 REMOTE_REQ="$BOX_HOME/${NAME_PREFIX}-inbox/requests"
 REMOTE_RESP="$BOX_HOME/${NAME_PREFIX}-inbox/responses"
+REMOTE_QUAR="$BOX_HOME/${NAME_PREFIX}-inbox/quarantine"
 KANBAN_DB="$BOX_HOME/kanban.db"
 TASK_PREFIX="${NAME_PREFIX}-task-"
 export TASK_PREFIX
@@ -177,6 +178,28 @@ for f in $FILES; do
     continue
   fi
   echo "$B64" | base64 -d > "$LOCAL_WORK/${id}.md"
+
+  # Dead-letter quarantine (audit Nov 9, 2026): a request with no usable
+  # frontmatter (no type: or id: line anywhere) can never be answered, but
+  # until now it sat in requests/ being re-scanned every cycle, silently —
+  # and the Nov 8 one crashed every run for ~36h before the guards landed.
+  # Move it to the box quarantine dir where it is a countable artifact.
+  # Only reached for files with no response yet (the skip above ran first),
+  # and the original is deleted only after the copy verifies.
+  if ! grep -q -E -m 1 '^(type|id):' "$LOCAL_WORK/${id}.md"; then
+    QDATE=$(date -u +%Y%m%d)
+    QB64=$(base64 -w0 "$LOCAL_WORK/${id}.md")
+    $MWH "mkdir -p '$REMOTE_QUAR'; echo '$QB64' | base64 -d > '$REMOTE_QUAR/${id}.quarantined-${QDATE}.md'" 2>/dev/null | grep -v "Warning:" || true
+    QVERIFY=$($MWH "test -f '$REMOTE_QUAR/${id}.quarantined-${QDATE}.md' && echo yes || echo no" 2>/dev/null | grep -v "Warning:" | tail -1)
+    if [ "$QVERIFY" = "yes" ]; then
+      $MWH "rm -f '$REMOTE_REQ/$fname'" 2>/dev/null | grep -v "Warning:" || true
+      log "quarantine: $id (no type:/id: frontmatter) — moved to quarantine/"
+      rm -f "$LOCAL_WORK/${id}.md"
+    else
+      log "quarantine FAILED for $id — left in requests/ for the guards to skip"
+    fi
+    continue
+  fi
 
   # Parse frontmatter (guarded Nov 9, 2026: an unguarded grep here killed
   # every run under set -e/pipefail when a frontmatter-less request landed
