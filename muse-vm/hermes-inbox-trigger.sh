@@ -8,7 +8,8 @@
 #
 # Every poll runs the existing watcher script (which does all polling,
 # answering, claiming and briefing in bash), then diffs durable state and
-# wakes an agent ONLY when something needs judgment: a new jimmy task
+# wakes an agent ONLY when something needs judgment: a new muse task
+# (legacy jimmy-task briefs still draining are globbed too)
 # brief, a newly processed agent request, a significant kanban event
 # (blocked/crashed/failed/gave_up), a failure flag from the script-only
 # timer jobs, or the Tailscale SSH re-auth wall.
@@ -51,7 +52,7 @@ if os.path.exists(state_path):
         state = None
 
 briefs_now = []
-for p in sorted(glob.glob(os.path.join(work, "jimmy-task-*.md"))):
+for p in sorted(glob.glob(os.path.join(work, "muse-task-*.md")) + glob.glob(os.path.join(work, "jimmy-task-*.md"))):
     if not os.path.exists(p[:-3] + ".done"):
         briefs_now.append(os.path.basename(p))
 
