@@ -13,7 +13,7 @@ pgrep -f kanban-events-daemon.py
 tail -20 ~/.hermes/logs/kanban-events-daemon.log
 
 # Check the watermark (should advance with each event)
-cat ~/.hermes/muse-inbox/kanban-events/.watermark
+cat ~/.hermes/jimmy-inbox/kanban-events/.watermark
 ```
 
 **Fix:** If not running, start it. If running but stuck, check for DB lock errors in the log. The daemon uses read-only SQLite connections specifically to avoid locking.
@@ -150,7 +150,7 @@ tail -20 ~/workspace/inbox/listener.log
 
 **Fix:** Ensure the heartbeat thread is running (it's built into `inbox-listener.py`). Check:
 ```bash
-ls -la ~/workspace/.work-heartbeat-muse-inbox-listener
+ls -la ~/workspace/.work-heartbeat-jimmy-inbox-listener
 # mtime should be recent (within 5 minutes)
 ```
 
