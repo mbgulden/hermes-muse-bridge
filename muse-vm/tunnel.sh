@@ -25,7 +25,7 @@
 #   BRIDGE_PORT_BASE     — first port in rotation pool (default: 18991)
 #   BRIDGE_PORT_COUNT    — pool size (default: 10, i.e. 18991-19000)
 #   BRIDGE_PORT_FILE     — path on box where live port is written
-#                          (default: /home/ubuntu/.hermes/jimmy-listener-port)
+#                          (default: /home/ubuntu/.hermes/muse-listener-port)
 #   BRIDGE_LOCAL_PORT    — local listener port (default: 8899)
 #   BRIDGE_SSH_KEY       — path to SSH key (default: ~/.ssh/id_ed25519)
 #   BRIDGE_PROXY_CMD     — ProxyCommand string (for Tailscale tunnel proxy)
@@ -55,7 +55,7 @@ SSH_KEY="${BRIDGE_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PORT_ROTATION="${BRIDGE_PORT_ROTATION:-1}"
 PORT_BASE="${BRIDGE_PORT_BASE:-18991}"
 PORT_COUNT="${BRIDGE_PORT_COUNT:-10}"
-PORT_FILE="${BRIDGE_PORT_FILE:-/home/ubuntu/.hermes/jimmy-listener-port}"
+PORT_FILE="${BRIDGE_PORT_FILE:-/home/ubuntu/.hermes/muse-listener-port}"
 PID_FILE="$HOME/workspace/.tunnel.pid"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) muse-tunnel: $*" >> "$HOME/workspace/inbox/tunnel.log"; }
@@ -68,11 +68,11 @@ heartbeat() {
 ensure_listener() {
   if ! curl -s --max-time 3 "http://127.0.0.1:$LOCAL_PORT/health" 2>/dev/null | grep -q '"ok"'; then
     # systemd owns the listener when its unit is installed (see systemd/ +
-    # install-jimmy-units.sh): it restarts within seconds, and a bare nohup
+    # install-muse-units.sh): it restarts within seconds, and a bare nohup
     # copy would fight the unit for the port. Only fall back to a bare start
     # when no unit exists (pre-systemd installs).
-    if systemctl cat jimmy-listener.service >/dev/null 2>&1; then
-      log "listener not responding; jimmy-listener.service owns it, leaving restart to systemd"
+    if systemctl cat muse-listener.service >/dev/null 2>&1; then
+      log "listener not responding; muse-listener.service owns it, leaving restart to systemd"
       sleep 2
       return
     fi
