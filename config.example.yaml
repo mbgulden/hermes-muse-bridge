@@ -36,7 +36,7 @@ kanban:
   # or a comma-separated list. Must match what you use in
   # `hermes kanban create --assignee <value>`. The reference deployment
   # claims both the legacy and the current assignee.
-  assignee: "jimmy,muse"
+  assignee: "muse"
   # Max tasks claimed per watcher run
   max_claims_per_run: 5
   # Max concurrent subagents working tasks
