@@ -153,3 +153,20 @@ tail -20 ~/workspace/inbox/listener.log
 ls -la ~/workspace/.work-heartbeat-muse-inbox-listener
 # mtime should be recent (within 5 minutes)
 ```
+
+## Watcher runs but never claims tasks
+
+**Symptom:** Tasks assigned to `muse` sit in `ready` and no new runs appear. The watcher log shows `processing <id>` for the same inbox request on every run, and runs stop logging `=== watch run end ===`.
+
+**Cause:** An inbox request file with no `type:`/`from:` frontmatter. Before 1.6.3 the inbox step parsed frontmatter with an unguarded `grep` inside a command substitution; under `set -euo pipefail` the grep's non-zero exit ended the whole run at that file — before the kanban event tail and the claim section — on every run, for as long as the request sat unanswered.
+
+**Check:**
+```bash
+# A healthy watcher logs a run end on every run — when did that stop?
+grep "watch run end" ~/workspace/inbox/watch.log | tail -1
+
+# Inspect the request the log keeps processing: does it have frontmatter?
+head -5 ~/workspace/inbox/work/<id>.md   # look for type: / from: lines
+```
+
+**Fix:** Update the watcher to 1.6.3 or later (guarded parse). To unblock immediately on an older version, write a response file for the offending request in your inbox's responses directory on the box — the watcher skips any request that already has a response — or add `type:`/`from:` frontmatter to the request file itself.
