@@ -28,8 +28,8 @@ def init(hermes_home, streamops_env, log_fn, send_fn, open_db_fn):
 
 
 STEER_UPDATE_OFFSET_FILE = None  # set in init
-_JIMMY_STEER_TIMES = {}
-JIMMY_STEER_MIN_INTERVAL = 300  # 5 minutes
+_MUSE_STEER_TIMES = {}
+MUSE_STEER_MIN_INTERVAL = 300  # 5 minutes
 
 
 def _offset_file():
@@ -140,20 +140,20 @@ def handle_steer(sender_id, chat_id, message_id, text, bot_token):
     _log("steer: task=%s by michael comment_id=%d" % (task_id, cid))
 
 
-def jimmy_steer(task_id, instruction):
-    """Jimmy automation steer. Rate-limited: 1 per task per 5 min."""
+def muse_steer(task_id, instruction):
+    """Muse automation steer. Rate-limited: 1 per task per 5 min."""
     now = time.time()
-    last = _JIMMY_STEER_TIMES.get(task_id, 0)
-    if now - last < JIMMY_STEER_MIN_INTERVAL:
-        _log("jimmy_steer rate-limited for %s (%.0fs since last)" % (task_id, now - last))
+    last = _MUSE_STEER_TIMES.get(task_id, 0)
+    if now - last < MUSE_STEER_MIN_INTERVAL:
+        _log("muse_steer rate-limited for %s (%.0fs since last)" % (task_id, now - last))
         return False
     exists, status, _, _ = get_task_status(task_id)
     if not exists or status not in ("in_progress", "running"):
         return False
-    cid = write_steer_comment(task_id, "jimmy", instruction)
+    cid = write_steer_comment(task_id, "muse", instruction)
     if cid:
-        _JIMMY_STEER_TIMES[task_id] = now
-        _log("jimmy_steer: task=%s comment_id=%d" % (task_id, cid))
+        _MUSE_STEER_TIMES[task_id] = now
+        _log("muse_steer: task=%s comment_id=%d" % (task_id, cid))
         return True
     return False
 
