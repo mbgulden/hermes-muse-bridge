@@ -1,5 +1,15 @@
 # Changelog — hermes-muse-bridge
 
+## 1.7.0 (2026-11-09)
+
+The drift reconcile: the repository now matches the deployment it describes.
+
+- **Watcher defaults now equal the reference deployment** (`muse-vm/inbox-watch.sh`) — the watcher was rebuilt from the live script, so its run logic is the deployed logic by construction: lockfile, exit-code-aware transport probe, and the Nov 9 frontmatter guard included. Defaults: the inbox at `<hermes_home>/jimmy-inbox`, briefs named `jimmy-task-<id>.md`, claim set `jimmy,muse`. The v1.6.x naming stays restorable with `BRIDGE_NAME_PREFIX=muse` and `BRIDGE_ASSIGNEE=muse`.
+- **New knob `BRIDGE_NAME_PREFIX`** derives the inbox directory and the brief filenames; `BRIDGE_ASSIGNEE` accepts a comma-separated list.
+- **Claim subprocess fix** — a multi-word `BRIDGE_SSH_CMD` is now split correctly; previously only single-path commands worked.
+- **Docs and config aligned** — ARCHITECTURE.md, the cron-body mechanism note, the inbox-trigger prompt, both skills, the example config, and install.sh name the same paths the watcher uses. The listener heartbeat file is `.work-heartbeat-jimmy-inbox-listener`, as deployed. The `call-muse` box skill documents its reference-deployment name (`call-jimmy`); the skill itself is not renamed.
+- **Verified by fixture** (localhost transport, stub kanban CLI): typed and frontmatter-less requests answered, a task claimed, a `jimmy-task-*` brief written, the run ends clean. The v1.6.2 watcher against the same fixture dies at the frontmatter-less request — the Nov 8 freeze, reproduced. With the knobs set to the old values, the new watcher reproduces the v1.6.x layout exactly.
+
 ## 1.6.3 (2026-11-09)
 
 Watcher hotfix from production use:
