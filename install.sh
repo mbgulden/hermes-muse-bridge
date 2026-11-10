@@ -98,7 +98,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   TG_TOKEN=$(ask "Bot token (from @BotFather)" "")
   TG_CHAT=$(ask "Chat ID for notifications" "")
 
-  ASSIGNEE=$(ask "Kanban assignee(s) for the watcher (comma-separated)" "jimmy,muse")
+  ASSIGNEE=$(ask "Kanban assignee(s) for the watcher (comma-separated)" "muse")
 
   # Write config.yaml
   if [ "$DRY_RUN" = "0" ]; then
@@ -141,7 +141,7 @@ else
   TRANSPORT="${TRANSPORT:-tailscale-ssh}"
   BOX_HOST="${BOX_HOST:-localhost}"
   BOX_USER="${BOX_USER:-ubuntu}"
-  ASSIGNEE="${ASSIGNEE:-jimmy,muse}"
+  ASSIGNEE="${ASSIGNEE:-muse}"
 fi
 
 BOX_HOME="/home/$BOX_USER/.hermes"
@@ -275,9 +275,8 @@ run mkdir -p "$HOME/workspace/custom-skills"
 run cp -r "$REPO_DIR/skills/muse-kanban-worker" "$HOME/workspace/custom-skills/"
 echo "Deployed muse-kanban-worker skill to Muse VM"
 
-# NOTE: the reference deployment installs the box skill as "call-jimmy",
-# matching the watcher's default BRIDGE_NAME_PREFIX=jimmy. Rename the
-# target directory below if your prefix differs.
+# NOTE: the reference deployment installs the box skill as "call-muse",
+# matching the watcher's default BRIDGE_NAME_PREFIX=muse.
 
 if [ "$TRANSPORT" = "localhost" ]; then
   for profile_dir in "$BOX_HOME"/profiles/*/; do
