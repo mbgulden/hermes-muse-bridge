@@ -1,22 +1,32 @@
 #!/bin/bash
 # inbox-watch.sh — Poll the Hermes box for agent requests, kanban events, and tasks.
 #
-# Runs every minute via Muse cron. Does four things:
-#   1. Checks tunnel-push inbox (~/workspace/inbox/kanban-push/) for instant events
-#   2. Checks <hermes_home>/muse-inbox/requests/ on the box for agent requests
+# Driven by the hermes-inbox-trigger hook (~60s poll) or run standalone.
+# Does four things:
+#   1. Checks the tunnel-push inbox (~/workspace/inbox/kanban-push/) for instant events
+#   2. Checks <hermes_home>/<prefix>-inbox/requests/ on the box for agent requests
 #   3. Polls kanban.db task_events as fallback (catches tunnel misses)
-#   4. Claims tasks assigned to $BRIDGE_ASSIGNEE and prepares them for subagents;
-#      tasks in 'review' status are briefed WITHOUT claiming (see worker section)
+#   4. Claims tasks assigned to the configured assignees and prepares them
+#      for subagents; tasks in 'review' status are briefed WITHOUT claiming
+#
+# This is the polling design (2026-10-19): the box cannot SSH to the Muse
+# VM (no sshd available), so the VM polls the box instead.
 #
 # Transport modes (BRIDGE_TRANSPORT):
 #   tailscale-ssh, direct-ssh: use SSH via $BRIDGE_SSH_CMD to reach the box
 #   localhost: box paths are local, no SSH needed
 #
-# Environment:
-#   BRIDGE_TRANSPORT  — transport mode (default: tailscale-ssh)
-#   BRIDGE_SSH_CMD    — SSH command prefix (default: mwh-safe.sh equivalent)
-#   BRIDGE_BOX_HOME   — Hermes home on box (default: /home/ubuntu/.hermes)
-#   BRIDGE_ASSIGNEE   — kanban assignee to claim (default: muse)
+# Environment (defaults = the reference deployment):
+#   BRIDGE_TRANSPORT   — transport mode (default: tailscale-ssh)
+#   BRIDGE_SSH_CMD     — SSH command prefix (default: ~/workspace/bin/mwh-safe.sh)
+#   BRIDGE_BOX_HOME    — Hermes home on box (default: /home/ubuntu/.hermes)
+#   BRIDGE_NAME_PREFIX — names the inbox dir (<prefix>-inbox) and the brief
+#                        files (<prefix>-task-<id>.md) (default: jimmy)
+#   BRIDGE_ASSIGNEE    — comma-separated kanban assignees to claim, no
+#                        spaces (default: jimmy,muse)
+#
+# The v1.6.x naming (muse-inbox, muse-task-*, assignee muse alone) is
+# restorable with BRIDGE_NAME_PREFIX=muse BRIDGE_ASSIGNEE=muse.
 #
 # Usage:
 #   ./inbox-watch.sh [--help]
@@ -28,24 +38,37 @@ if [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
-TRANSPORT="${BRIDGE_TRANSPORT:-tailscale-ssh}"
-BOX_HOME="${BRIDGE_BOX_HOME:-/home/ubuntu/.hermes}"
-ASSIGNEE="${BRIDGE_ASSIGNEE:-muse}"
-export BOX_HOME ASSIGNEE  # Available to Python heredocs via os.environ
-
-# SSH command: override with BRIDGE_SSH_CMD, or use local exec for localhost mode
-if [ "$TRANSPORT" = "localhost" ]; then
-  # Local mode: run commands directly (box is this machine)
-  mwh() { eval "$1"; }
-  MWH="mwh"
-else
-  MWH="${BRIDGE_SSH_CMD:-$HOME/workspace/bin/mwh-safe.sh}"
-  mwh() { "$MWH" "$1" 2>/dev/null | grep -v "Warning:" || true; }
+# Lockfile: overlapping cron instances used to abort each other silently at the
+# SSH wall probe (observed 2026-10-21 — two runs exited 43 mid-run). flock on
+# a held fd means a second instance exits quietly instead of interleaving.
+LOCKFILE="$HOME/workspace/inbox/.watch.lock"
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+  # Another run is in progress; stay silent, cron retries next minute.
+  exit 0
 fi
 
-REMOTE_REQ="$BOX_HOME/muse-inbox/requests"
-REMOTE_RESP="$BOX_HOME/muse-inbox/responses"
+TRANSPORT="${BRIDGE_TRANSPORT:-tailscale-ssh}"
+BOX_HOME="${BRIDGE_BOX_HOME:-/home/ubuntu/.hermes}"
+NAME_PREFIX="${BRIDGE_NAME_PREFIX:-jimmy}"
+ASSIGNEES="${BRIDGE_ASSIGNEE:-jimmy,muse}"
+export BOX_HOME NAME_PREFIX ASSIGNEES
+
+# SSH command: override with BRIDGE_SSH_CMD, or local exec for localhost mode
+if [ "$TRANSPORT" = "localhost" ]; then
+  MWH="eval"
+else
+  MWH="${BRIDGE_SSH_CMD:-$HOME/workspace/bin/mwh-safe.sh}"
+fi
+
+# SQL IN-list for the claim query, from the comma-separated assignees
+ASSIGNEE_SQL=$(printf "'%s', " $(echo "$ASSIGNEES" | tr ',' ' ') | sed 's/, $//')
+
+REMOTE_REQ="$BOX_HOME/${NAME_PREFIX}-inbox/requests"
+REMOTE_RESP="$BOX_HOME/${NAME_PREFIX}-inbox/responses"
 KANBAN_DB="$BOX_HOME/kanban.db"
+TASK_PREFIX="${NAME_PREFIX}-task-"
+export TASK_PREFIX
 LOCAL_WORK="$HOME/workspace/inbox/work"
 LOG="$HOME/workspace/inbox/watch.log"
 
@@ -58,7 +81,9 @@ log() {
 # Self-healing HTTP listener check
 if ! curl -s -m 3 http://127.0.0.1:8899/health | grep -q '"ok"'; then
   log "listener down — restarting"
-  ~/workspace/bin/ensure-listener.sh
+  # 9>&-: close the flock fd before spawning, so the listener can't inherit
+  # the watch lock and wedge every later run (2026-10-21 incident).
+  ~/workspace/bin/ensure-listener.sh 9>&-
 fi
 
 log "=== watch run start ==="
@@ -75,8 +100,9 @@ push_count=0
 for pf in "$PUSH_DIR"/*.json; do
   [ -f "$pf" ] || continue
   fname=$(basename "$pf")
+  # Extract kind + title for the log line (best effort)
   summary=$(python3 -c "
-import json
+import json, sys
 try:
     with open('$pf') as f:
         d = json.load(f)
@@ -92,22 +118,31 @@ except Exception as e:
 done
 [ "$push_count" -gt 0 ] && log "kanban-push: processed $push_count file(s)"
 
-# ── SSH wall probe: if the SSH transport hits an interactive re-auth wall
-# (e.g. the Tailscale SSH "check" action), every remote step below would
-# mis-parse the wall message as data and abort mid-run under set -o pipefail.
-# Detect it once, log the login URL, and skip remote steps this run. The
-# local tunnel-push inbox (Step 1) already ran above. Transports that never
-# print a login URL (direct-ssh, localhost) make this a no-op.
-WALL_URL=$($MWH "true" 2>/dev/null | grep -o 'https://login\.tailscale\.com/a/[A-Za-z0-9]*' | head -1 || true)
+# ── SSH wall probe (2026-10-20): if the Tailscale re-auth wall is up,
+# mwh-safe.sh exits 42 and every remote step below would mis-parse the
+# wall message as data and abort mid-run under set -o pipefail.
+# Detect it once, log the current login URL, and skip remote steps this run.
+# The local tunnel-push inbox (Step 1) already ran above.
+# 2026-10-21: also detect non-wall transport failures (mwh-safe rc 43/44/45/46).
+# The probe used to only look for the re-auth URL, so a proxy flap sailed
+# through and every remote step mis-parsed the error text as data, aborting
+# mid-run (observed: exit 43, garbage ids like "proxy" entering the inbox loop).
+PROBE_RC=0
+PROBE_OUT=$($MWH "true" 2>/dev/null) || PROBE_RC=$?
+WALL_URL=$(printf '%s' "$PROBE_OUT" | grep -o 'https://login\.tailscale\.com/a/[A-Za-z0-9]*' | head -1 || true)
 if [ -n "$WALL_URL" ]; then
-  log "SSH wall up — skipping remote steps (inbox, kanban tail, worker). Re-auth required: $WALL_URL"
+  log "SSH wall up — skipping remote steps (inbox, kanban tail, ${NAME_PREFIX}-worker). Michael must visit: $WALL_URL"
   log "=== watch run end (wall) ==="
+  exit 0
+fi
+if [ "$PROBE_RC" -ne 0 ]; then
+  log "SSH transport down (mwh-safe rc=$PROBE_RC) — skipping remote steps (inbox, kanban tail, ${NAME_PREFIX}-worker) this run"
+  log "=== watch run end (transport) ==="
   exit 0
 fi
 
 # ── Step 2: Agent inbox ──
-# List request files on the box
-FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep -v "Warning:" || true)
+FILES=$($MWH "ls -1 $REMOTE_REQ/*.md 2>/dev/null" 2>/dev/null | grep '\.md$' | grep -v "Warning:" || true)
 
 if [ -z "$FILES" ]; then
   log "no requests"
@@ -152,7 +187,7 @@ for f in $FILES; do
   {
     echo "---"
     echo "id: $id"
-    echo "from: muse"
+    echo "from: $NAME_PREFIX"
     echo "to: $FROM"
     echo "created: $(date -u +%FT%TZ)"
     case "$TYPE" in
@@ -170,7 +205,7 @@ for f in $FILES; do
     echo ""
     case "$TYPE" in
       escalation)
-        echo "Escalation received. Muse will surface this to Michael in chat."
+        echo "Escalation received. Jimmy will surface this to Michael in chat."
         echo ""
         echo "Handler v1: automatic escalation routing is not yet implemented."
         echo "The request has been logged and will be reviewed."
@@ -178,18 +213,18 @@ for f in $FILES; do
       question)
         echo "Question received. Handler v1 does not auto-answer questions yet."
         echo ""
-        echo "Your question has been logged. Your Muse agent will review and respond,"
+        echo "Your question has been logged. Jimmy will review and respond,"
         echo "or route it to Michael if it needs his input."
         ;;
       judgment)
         echo "Judgment request received. Handler v1 does not auto-judge yet."
         echo ""
-        echo "The request has been logged for Muse's review."
+        echo "The request has been logged for Jimmy's review."
         ;;
       review-request)
         echo "Review request received. Handler v1 does not auto-review yet."
         echo ""
-        echo "The artifact path has been logged. It will be reviewed manually"
+        echo "The artifact path has been logged. Jimmy will review manually"
         echo "or dispatch it through the pstack-interrogate playbook."
         ;;
       *)
@@ -217,11 +252,11 @@ log "=== watch run end (inbox) ==="
 # ── Kanban event tail ──
 # Poll task_events in kanban.db for new lifecycle events since last watermark.
 # Significant events (completed, blocked, crashed, failed) are logged for
-# Muse's awareness. This gives event-based visibility into the kanban board
+# Jimmy's awareness. This gives event-based visibility into the kanban board
 # without webhooks or new services.
 
 WATERMARK="$HOME/workspace/inbox/kanban-event-watermark"
-# KANBAN_DB is set from BOX_HOME in the header
+# KANBAN_DB is set in the config block above.
 
 LAST_ID=0
 [ -f "$WATERMARK" ] && LAST_ID=$(cat "$WATERMARK")
@@ -281,13 +316,13 @@ for e in events:
   log "kanban: watermark $LAST_ID → $NEW_WATERMARK"
 fi
 
-# ── Muse as kanban worker: retry failed tasks ──
+# ── Jimmy as kanban worker: retry failed tasks ──
 # If a subagent was dispatched but never wrote a .done marker, the task failed.
 # Increment consecutive_failures, re-queue for retry. After 3 failures, block it.
-for brief in "$LOCAL_WORK"/muse-task-*.md; do
+for brief in "$LOCAL_WORK"/${TASK_PREFIX}*.md; do
   [ -f "$brief" ] || continue
-  tid=$(basename "$brief" .md | sed 's/muse-task-//')
-  done_marker="$LOCAL_WORK/muse-task-${tid}.done"
+  tid=$(basename "$brief" .md | sed "s/^${TASK_PREFIX}//")
+  done_marker="$LOCAL_WORK/${TASK_PREFIX}${tid}.done"
   [ -f "$done_marker" ] && continue  # completed successfully
 
   # Brief exists but no .done — check age (give subagent 30 min before retry)
@@ -296,8 +331,6 @@ for brief in "$LOCAL_WORK"/muse-task-*.md; do
     continue  # still within grace period
   fi
 
-  # Review tasks are never claimed, re-queued, or auto-blocked: if a stale
-  # review brief lingers, drop the brief and leave the task in review.
   TASK_STATUS=$($MWH "python3 -c \"import sqlite3; db=sqlite3.connect('$KANBAN_DB'); r=db.execute('SELECT status FROM tasks WHERE id=?', ('$tid',)).fetchone(); print(r[0] if r else '')\"" 2>/dev/null | grep -v "Warning:" | tail -1)
   if [ "$TASK_STATUS" = "review" ]; then
     log "kanban-worker: $tid is a review task — dropping stale brief, task stays in review"
@@ -305,11 +338,11 @@ for brief in "$LOCAL_WORK"/muse-task-*.md; do
     continue
   fi
 
-  # Claim-loop guard: the failure ladder below is only for a worker that is
-  # actually holding the task (status 'running') and went silent. If the
-  # claim already expired (status ready/todo), the brief is simply queued
-  # work — leave it in place and count no failure. Terminal states just
-  # need the brief cleaned up.
+  # Claim-loop guard (Nov 5, 2026): the failure ladder below is only for a
+  # worker that is actually holding the task (status 'running') and went
+  # silent. If the claim already expired (status ready/todo), the brief is
+  # simply queued work — leave it in place and count no failure. Terminal
+  # states just need the brief cleaned up.
   if [ "$TASK_STATUS" != "running" ]; then
     if [ "$TASK_STATUS" = "done" ] || [ "$TASK_STATUS" = "blocked" ] || [ "$TASK_STATUS" = "archived" ]; then
       log "kanban-worker: $tid is $TASK_STATUS — dropping brief (terminal)"
@@ -343,78 +376,67 @@ PYEOF" 2>/dev/null | grep -v "Warning:" | while read -r line; do log "kanban-wor
   rm -f "$brief"
 done
 
-# ── Muse as kanban worker ──
-# Claim tasks assigned to 'muse' and prepare them for subagent execution.
+# ── The agent as kanban worker ──
+# Claim tasks assigned to the configured assignees and prepare them for subagent execution.
 # The cron worker (not this script) spawns subagents to do the actual work.
-# This section: find → claim → write brief. Max 5 per run.
+# This section: find → claim → write brief. Max 5 claims per run.
 # Tasks are claimed in priority order (urgent first).
-#
-# Two gates on the query:
-#   * Parent gate: a task whose parent is not yet 'done' is skipped. The
-#     kanban DB's terminal status is 'done' — an earlier version gated on
-#     'completed', which never matches, so every task WITH a parent was
-#     silently skipped forever.
-#   * Review tasks: tasks in 'review' status are included, but briefed
-#     WITHOUT claiming — `hermes kanban claim` refuses review tasks by
-#     design. The reviewer verifies the work and resolves the task
-#     directly (complete to approve, request-changes to send back).
 
-MUSE_TASKS_JSON=$($MWH "python3 -c \"
+WORKER_TASKS_JSON=$($MWH "python3 -c \"
 import sqlite3, json
 db = sqlite3.connect('$KANBAN_DB')
 db.row_factory = sqlite3.Row
 rows = []
-for r in db.execute(\\\"SELECT id, title, body, status, priority FROM tasks WHERE assignee='${BRIDGE_ASSIGNEE:-muse}' AND status IN ('todo', 'ready', 'review') AND NOT EXISTS (SELECT 1 FROM task_links tl JOIN tasks p ON p.id = tl.parent_id WHERE tl.child_id = tasks.id AND p.status != 'done') ORDER BY priority DESC, created_at ASC LIMIT 5\\\"):
+for r in db.execute(\\\"SELECT id, title, body, status, priority FROM tasks WHERE assignee IN ($ASSIGNEE_SQL) AND status IN ('todo', 'ready', 'review') AND NOT EXISTS (SELECT 1 FROM task_links tl JOIN tasks p ON p.id = tl.parent_id WHERE tl.child_id = tasks.id AND p.status != 'done') ORDER BY priority DESC, created_at ASC LIMIT 5\\\"):
     rows.append(dict(r))
 print(json.dumps(rows))
 \"" 2>/dev/null | grep -v "Warning:" | tail -1)
 
-if [ -z "$MUSE_TASKS_JSON" ] || [ "$MUSE_TASKS_JSON" = "[]" ]; then
-  log "kanban-worker: no tasks assigned to muse"
+if [ -z "$WORKER_TASKS_JSON" ] || [ "$WORKER_TASKS_JSON" = "[]" ]; then
+  log "kanban-worker: no tasks assigned to $ASSIGNEES"
 else
-  echo "$MUSE_TASKS_JSON" > "$LOCAL_WORK/muse-tasks.json"
+  echo "$WORKER_TASKS_JSON" > "$LOCAL_WORK/worker-tasks.json"
   CLAIMED_COUNT=$(python3 -c "
 import json
-with open('$LOCAL_WORK/muse-tasks.json') as f:
+with open('$LOCAL_WORK/worker-tasks.json') as f:
     tasks = json.load(f)
 print(len(tasks))
 ")
-  log "kanban-worker: $CLAIMED_COUNT task(s) assigned to muse, claiming..."
+  log "kanban-worker: $CLAIMED_COUNT task(s) assigned to $ASSIGNEES, claiming..."
 
   # Claim each task via the Hermes CLI and write a brief
   python3 << 'PYEOF' >> "$LOG" 2>&1
-import json, subprocess, os
+import json, subprocess, os, shlex
 
 MWH = os.environ.get("BRIDGE_SSH_CMD", os.path.expanduser("~/workspace/bin/mwh-safe.sh"))
 BOX_HOME = os.environ.get("BOX_HOME", "/home/ubuntu/.hermes")
+NAME_PREFIX = os.environ.get("NAME_PREFIX", "jimmy")
+TASK_PREFIX = os.environ.get("TASK_PREFIX", "jimmy-task-")
 WORK_DIR = os.path.expanduser("~/workspace/inbox/work")
 LOCAL_WORK_DIR = os.path.expanduser("~/workspace/inbox/work")
 
-with open(os.path.join(LOCAL_WORK_DIR, "muse-tasks.json")) as f:
+with open(os.path.join(LOCAL_WORK_DIR, "worker-tasks.json")) as f:
     tasks = json.load(f)
 
 for t in tasks:
     tid = t["id"]
     title = t.get("title", "?")
-    # Claim-loop guard: never re-claim a task whose brief is already
-    # outstanding. The claim TTL (900s) is shorter than the time a queued
-    # task may wait for pickup, so without this skip the watcher re-claims
-    # and re-briefs the same tasks every ~15 minutes forever, holding them
-    # in 'running' and eating dispatcher concurrency slots.
-    _brief = os.path.join(WORK_DIR, f"muse-task-{tid}.md")
-    _done = os.path.join(WORK_DIR, f"muse-task-{tid}.done")
+    # Claim-loop guard (Nov 5, 2026): never re-claim a task whose brief is
+    # already outstanding. The claim TTL (900s) is shorter than the time a
+    # queued task may wait for pickup, so without this skip the watcher
+    # re-claims and re-briefs the same tasks every ~15 minutes forever,
+    # holding them in 'running' and eating dispatcher concurrency slots.
+    _brief = os.path.join(WORK_DIR, f"{TASK_PREFIX}{tid}.md")
+    _done = os.path.join(WORK_DIR, f"{TASK_PREFIX}{tid}.done")
     if os.path.exists(_brief) and not os.path.exists(_done):
         print(f"kanban-worker: brief already outstanding for {tid} — skipping re-claim")
         continue
     if t.get("status") == "review":
-        # Review task: do NOT claim (the CLI refuses claims on review tasks).
-        # Write a REVIEW brief; the reviewer verifies independently and
-        # resolves the task directly via complete / request-changes.
-        brief_path = os.path.join(WORK_DIR, f"muse-task-{tid}.md")
+        brief_path = os.path.join(WORK_DIR, f"{TASK_PREFIX}{tid}.md")
         with open(brief_path, "w") as bf:
             bf.write(f"# Kanban Task (REVIEW): {tid}\n\n")
             bf.write(f"**Title:** {title}\n\n")
-            bf.write("**Status:** review — do NOT claim this task\n\n")
+            bf.write("**Status:** review (assigned to muse — do NOT claim this task)\n\n")
             bf.write(f"**Priority:** {t.get('priority', 'normal')}\n\n")
             bf.write(f"## Body\n\n{t.get('body', '(no body)')}\n\n")
             bf.write("## Instructions — this is a REVIEW. Verify independently, then resolve:\n\n")
@@ -429,7 +451,7 @@ for t in tasks:
         continue
     # Claim via CLI (atomic, writes proper events)
     result = subprocess.run(
-        [MWH, f"HERMES_HOME={BOX_HOME} hermes kanban claim {tid}"],
+        shlex.split(MWH) + [f"HERMES_HOME={BOX_HOME} hermes kanban claim {tid}"],
         capture_output=True, text=True, timeout=30
     )
     # Check if claim succeeded (CLI prints workspace path on success)
@@ -441,11 +463,11 @@ for t in tasks:
     if result.returncode == 0 or "claimed" in output.lower():
         print(f"kanban-worker: claimed {tid} — {title}")
         # Write task brief for subagent execution
-        brief_path = os.path.join(WORK_DIR, f"muse-task-{tid}.md")
+        brief_path = os.path.join(WORK_DIR, f"{TASK_PREFIX}{tid}.md")
         with open(brief_path, "w") as bf:
             bf.write(f"# Kanban Task: {tid}\n\n")
             bf.write(f"**Title:** {title}\n\n")
-            bf.write(f"**Status:** running (claimed by muse)\n\n")
+            bf.write(f"**Status:** running (claimed by {NAME_PREFIX})\n\n")
             bf.write(f"**Priority:** {t.get('priority', 'normal')}\n\n")
             bf.write(f"## Body\n\n{t.get('body', '(no body)')}\n\n")
             bf.write("## Instructions\n\n")
