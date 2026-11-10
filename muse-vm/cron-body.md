@@ -31,10 +31,10 @@ unchanged — only its driver changed, from an LLM cron to a script hook.
    the box). Process each: log with KANBAN prefix, then move to
    `~/workspace/inbox/kanban-push/.processed/`.
 
-2. **Agent inbox:** Checks `<hermes_home>/muse-inbox/requests/` on the
+2. **Agent inbox:** Checks `<hermes_home>/jimmy-inbox/requests/` on the
    box via the configured SSH command, processes new requests by type
    (review-request, judgment, question, escalation), writes responses
-   to `<hermes_home>/muse-inbox/responses/<id>.response.md`, and logs
+   to `<hermes_home>/jimmy-inbox/responses/<id>.response.md`, and logs
    to `~/workspace/inbox/watch.log`.
 
 3. **Kanban event tail (fallback):** Polls `task_events` in
@@ -50,20 +50,20 @@ unchanged — only its driver changed, from an LLM cron to a script hook.
    claiming (the kanban CLI cannot claim a review task — the reviewer
    resolves it directly). Tasks whose parent task is not yet `done`
    are skipped. Either way a brief lands at
-   `~/workspace/inbox/work/muse-task-<id>.md`.
+   `~/workspace/inbox/work/jimmy-task-<id>.md`.
 
 **Subagent dispatch:** If the watcher claimed or briefed any new tasks
-(check for new `muse-task-*.md` files in `~/workspace/inbox/work/`
+(check for new `jimmy-task-*.md` files in `~/workspace/inbox/work/`
 without a corresponding `.done` marker), spawn one subagent per task
 (max 3 concurrent). Each subagent:
 
-- Reads the task brief from `~/workspace/inbox/work/muse-task-<id>.md`
+- Reads the task brief from `~/workspace/inbox/work/jimmy-task-<id>.md`
 - Does the work described in the brief
 - Updates the kanban task: mark `complete` with a result summary when
   done, or `blocked` if stuck
 - Adds a comment with key findings
 - Writes a `.done` marker file at
-  `~/workspace/inbox/work/muse-task-<id>.done` when finished
+  `~/workspace/inbox/work/jimmy-task-<id>.done` when finished
 - Reports back with what was done
 
 **REVIEW briefs are different.** If the brief's title line says
