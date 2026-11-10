@@ -13,7 +13,7 @@ Muse participates in the Hermes kanban board as a worker, not just an observer. 
 Task assigned to muse (todo/ready)
   → inbox-watch.sh finds it (every 1 min)
   → Claims via `hermes kanban claim <id>` (atomic, max 5/run)
-  → Writes brief to ~/workspace/inbox/work/muse-task-<id>.md
+  → Writes brief to ~/workspace/inbox/work/jimmy-task-<id>.md
   → Cron worker spawns subagent (max 3 concurrent)
   → Subagent does the work
   → Subagent updates kanban: complete / block / comment
@@ -131,6 +131,6 @@ You, or any agent or any agent with kanban access can assign tasks to Muse.
 ## Files
 
 - Watcher script: `~/workspace/bin/inbox-watch.sh` (worker section)
-- Task briefs: `~/workspace/inbox/work/muse-task-<id>.md`
-- Done markers: `~/workspace/inbox/work/muse-task-<id>.done`
+- Task briefs: `~/workspace/inbox/work/jimmy-task-<id>.md`
+- Done markers: `~/workspace/inbox/work/jimmy-task-<id>.done`
 - Cron: `hermes-inbox-watch` (every 1 min; tunnel push is primary, poll is fallback)
