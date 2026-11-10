@@ -135,9 +135,14 @@ for f in $FILES; do
   fi
   echo "$B64" | base64 -d > "$LOCAL_WORK/${id}.md"
 
-  # Parse frontmatter
-  TYPE=$(grep -m1 "^type:" "$LOCAL_WORK/${id}.md" | sed 's/type:[[:space:]]*//')
-  FROM=$(grep -m1 "^from:" "$LOCAL_WORK/${id}.md" | sed 's/from:[[:space:]]*//')
+  # Parse frontmatter (guarded Nov 9, 2026: an unguarded grep here killed
+  # every run under set -e/pipefail when a frontmatter-less request landed
+  # Nov 8 — the watcher died in Step 2 for ~36h and never reached the
+  # kanban tail or the worker section. Never let a parse miss exit the run.)
+  TYPE=$(grep -m1 "^type:" "$LOCAL_WORK/${id}.md" | sed 's/type:[[:space:]]*//' || true)
+  FROM=$(grep -m1 "^from:" "$LOCAL_WORK/${id}.md" | sed 's/from:[[:space:]]*//' || true)
+  [ -z "$TYPE" ] && TYPE="request"
+  [ -z "$FROM" ] && FROM="unknown"
   SKILL=$(grep -m1 "^skill:" "$LOCAL_WORK/${id}.md" | sed 's/skill:[[:space:]]*//' || echo "")
 
   log "  type=$TYPE from=$FROM skill=$SKILL"
