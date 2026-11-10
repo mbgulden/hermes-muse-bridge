@@ -1,5 +1,35 @@
 # Changelog — hermes-muse-bridge
 
+## 1.8.1 (2026-11-09)
+
+Bridge audit fixes (audit 2026-11-09; Michael's go with the premigration
+backup held to Nov 16). No behavior change to the event, claim, or steer
+paths — this release removes the silence around them.
+
+- **Dead-letter quarantine** — `muse-vm/inbox-watch.sh`: a request with no
+  usable frontmatter (no `type:` or `id:` line) is moved to the box
+  `muse-inbox/quarantine/` directory, verified there before the original
+  is deleted, and logged. The Nov 8 frontmatter-less file crashed every
+  watcher run for ~36h before the guards landed; a bad request is now a
+  countable artifact instead of a landmine.
+- **Housekeeping** — new `muse-vm/bridge-maint.sh`: prunes the event
+  spool to 48h on both machines (box `muse-inbox/kanban-events/`, VM
+  `kanban-push/.processed/`) and rotates bridge logs past 5 MB keeping 3
+  generations. First run: VM spool 94,945 → 17,907 files, box spool
+  97,817 → 18,034; the 43 MB watch.log rotated.
+- **Request-path canary** — new `muse-vm/fleet-request-canary.sh`:
+  synthetic request round-trip through the watcher (target <300s, FAIL
+  at 900s; first live run 113s), a watcher-silence check (no completed
+  run in >10 min fails), and a spool/disk guard (>1 GB total spool or
+  >92% box disk fails). The hourly canary cron now runs all three
+  scripts — maint, event canary, request canary (template updated).
+- **Cleanup:** the stale pre-migration staging tree and the .bak scatter
+  in both live bin dirs are deleted; the live tree and this repo are the
+  only two copies. The premigration inbox backup is held until Nov 16,
+  then deleted (tracked in the muse-direct queue); the kanban-push.sh
+  fallback retirement clock started Nov 9 — two clean listener-only
+  weeks, earliest ~Nov 23.
+
 ## 1.8.0 (2026-11-09)
 
 The muse-standard migration. Michael's standing standard — set when the
