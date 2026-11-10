@@ -21,12 +21,17 @@
 #   BRIDGE_SSH_CMD     — SSH command prefix (default: ~/workspace/bin/mwh-safe.sh)
 #   BRIDGE_BOX_HOME    — Hermes home on box (default: /home/ubuntu/.hermes)
 #   BRIDGE_NAME_PREFIX — names the inbox dir (<prefix>-inbox) and the brief
-#                        files (<prefix>-task-<id>.md) (default: jimmy)
+#                        files (<prefix>-task-<id>.md) (default: muse)
 #   BRIDGE_ASSIGNEE    — comma-separated kanban assignees to claim, no
-#                        spaces (default: jimmy,muse)
+#                        spaces (default: muse)
+#   BRIDGE_LEGACY_PREFIX — the pre-standard naming whose briefs are still
+#                        honored until they complete (default: jimmy;
+#                        set empty to disable the drain)
 #
-# The v1.6.x naming (muse-inbox, muse-task-*, assignee muse alone) is
-# restorable with BRIDGE_NAME_PREFIX=muse BRIDGE_ASSIGNEE=muse.
+# History: the deployment grew jimmy-* names after Oct 2026 while the
+# standard was muse; v1.7.0 canonized the deployment side by mistake and
+# v1.8.0 completes the migration to the muse standard. Briefs written
+# under the legacy prefix keep working until they drain.
 #
 # Usage:
 #   ./inbox-watch.sh [--help]
@@ -50,8 +55,8 @@ fi
 
 TRANSPORT="${BRIDGE_TRANSPORT:-tailscale-ssh}"
 BOX_HOME="${BRIDGE_BOX_HOME:-/home/ubuntu/.hermes}"
-NAME_PREFIX="${BRIDGE_NAME_PREFIX:-jimmy}"
-ASSIGNEES="${BRIDGE_ASSIGNEE:-jimmy,muse}"
+NAME_PREFIX="${BRIDGE_NAME_PREFIX:-muse}"
+ASSIGNEES="${BRIDGE_ASSIGNEE:-muse}"
 export BOX_HOME NAME_PREFIX ASSIGNEES
 
 # SSH command: override with BRIDGE_SSH_CMD, or local exec for localhost mode
@@ -69,6 +74,9 @@ REMOTE_RESP="$BOX_HOME/${NAME_PREFIX}-inbox/responses"
 KANBAN_DB="$BOX_HOME/kanban.db"
 TASK_PREFIX="${NAME_PREFIX}-task-"
 export TASK_PREFIX
+LEGACY_TASK_PREFIX="${BRIDGE_LEGACY_PREFIX:-jimmy}-task-"
+[ "$LEGACY_TASK_PREFIX" = "$TASK_PREFIX" ] && LEGACY_TASK_PREFIX=""
+export LEGACY_TASK_PREFIX
 LOCAL_WORK="$HOME/workspace/inbox/work"
 LOG="$HOME/workspace/inbox/watch.log"
 
@@ -319,11 +327,16 @@ fi
 # ── Jimmy as kanban worker: retry failed tasks ──
 # If a subagent was dispatched but never wrote a .done marker, the task failed.
 # Increment consecutive_failures, re-queue for retry. After 3 failures, block it.
-for brief in "$LOCAL_WORK"/${TASK_PREFIX}*.md; do
+BRIEF_FILES=()
+for _b in "$LOCAL_WORK"/${TASK_PREFIX}*.md; do [ -f "$_b" ] && BRIEF_FILES+=("$_b"); done
+if [ -n "$LEGACY_TASK_PREFIX" ]; then
+  for _b in "$LOCAL_WORK"/${LEGACY_TASK_PREFIX}*.md; do [ -f "$_b" ] && BRIEF_FILES+=("$_b"); done
+fi
+for brief in "${BRIEF_FILES[@]}"; do
   [ -f "$brief" ] || continue
-  tid=$(basename "$brief" .md | sed "s/^${TASK_PREFIX}//")
-  done_marker="$LOCAL_WORK/${TASK_PREFIX}${tid}.done"
-  [ -f "$done_marker" ] && continue  # completed successfully
+  tid=$(basename "$brief" .md | sed -e "s/^${TASK_PREFIX}//" -e "s/^${LEGACY_TASK_PREFIX}//")
+  [ -f "$LOCAL_WORK/${TASK_PREFIX}${tid}.done" ] && continue  # completed successfully
+  [ -f "$LOCAL_WORK/${LEGACY_TASK_PREFIX}${tid}.done" ] && continue  # legacy brief, completed
 
   # Brief exists but no .done — check age (give subagent 30 min before retry)
   brief_age=$(( $(date +%s) - $(stat -c %Y "$brief" 2>/dev/null || echo 0) ))
@@ -410,8 +423,9 @@ import json, subprocess, os, shlex
 
 MWH = os.environ.get("BRIDGE_SSH_CMD", os.path.expanduser("~/workspace/bin/mwh-safe.sh"))
 BOX_HOME = os.environ.get("BOX_HOME", "/home/ubuntu/.hermes")
-NAME_PREFIX = os.environ.get("NAME_PREFIX", "jimmy")
-TASK_PREFIX = os.environ.get("TASK_PREFIX", "jimmy-task-")
+NAME_PREFIX = os.environ.get("NAME_PREFIX", "muse")
+TASK_PREFIX = os.environ.get("TASK_PREFIX", "muse-task-")
+LEGACY_TASK_PREFIX = os.environ.get("LEGACY_TASK_PREFIX", "jimmy-task-")
 WORK_DIR = os.path.expanduser("~/workspace/inbox/work")
 LOCAL_WORK_DIR = os.path.expanduser("~/workspace/inbox/work")
 
@@ -428,7 +442,9 @@ for t in tasks:
     # holding them in 'running' and eating dispatcher concurrency slots.
     _brief = os.path.join(WORK_DIR, f"{TASK_PREFIX}{tid}.md")
     _done = os.path.join(WORK_DIR, f"{TASK_PREFIX}{tid}.done")
-    if os.path.exists(_brief) and not os.path.exists(_done):
+    _legacy_brief = os.path.join(WORK_DIR, f"{LEGACY_TASK_PREFIX}{tid}.md")
+    _legacy_done = os.path.join(WORK_DIR, f"{LEGACY_TASK_PREFIX}{tid}.done")
+    if (os.path.exists(_brief) and not os.path.exists(_done)) or (os.path.exists(_legacy_brief) and not os.path.exists(_legacy_done)):
         print(f"kanban-worker: brief already outstanding for {tid} — skipping re-claim")
         continue
     if t.get("status") == "review":
