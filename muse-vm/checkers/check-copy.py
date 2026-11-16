@@ -13,6 +13,15 @@ live). Surfaces:
           no em-dash prose, no honesty framing (the operator's standing rule).
 All surfaces: the repeated-six digit sequence is banned anywhere (checked as
 a pattern: the same digit six times in a row).
+Nov 3, 2026: site WARNs gained watch-only patterns (serves as, rather
+than, point-announcing transitions). Watch patterns never FAIL: they are
+clustering signals, and bans change what a sentence claims. Later Nov 3:
+the same three watch WARNs added to the email surface for parity; the
+owner surface stays unchanged. Later Nov 3: the email surface FAILs on
+real/really — the operator's Nov 2 banned filler words were enforced
+nowhere; an audit found live hits the checker had passed. Email surface
+only: the site surface keeps its human-cleared uses of "real" (brand
+lines).
 
 Usage: check-copy.py <file> [...] --surface site|email|owner [--json]
 Exit 1 on any FAIL. WARNs are judgment calls, printed for the human.
@@ -31,17 +40,24 @@ SURFACES = {
         },
         "warn": {
             "negative construction (positive voice rule; allowlist legal/terms files)": r"\b(never|without|not|no)\b|\b(don|won|can)'t\b",
-            "hedging word": r"(?i)\b(maybe|perhaps|just|simply)\b",
+            "softener (watch; personal doubt is fine, stacked softeners are the problem)": r"(?i)\b(maybe|perhaps|just|simply)\b",
+            "fancy verb for is/has (watch)": r"(?i)\bserves as\b",
+            "reversed contrast (watch; one genuine contrast is fine)": r"(?i)\brather than\b",
+            "point-announcing transition (watch)": r"(?i)here'?s what that means|that'?s (why|where|what|how)\b",
         },
     },
     "email": {
         "fail": {
             "banned phrase": r"(?i)straight from me|going all-in|on your own clock|your name kept coming up|more soon,",
             "honesty framing": r"(?i)\bhonest(ly)?\b",
+            "banned filler word (Nov 2 2026: state the fact plainly)": r"(?i)\breal(?:ly)?\b",
         },
         "warn": {
             "superlative": r"(?i)\b(best|amazing|incredible|world-class|unbeatable|ultimate)\b",
             "insider language": r"(?i)\b(synergy|leverage|utilize|circle back)\b",
+            "fancy verb for is/has (watch)": r"(?i)\bserves as\b",
+            "reversed contrast (watch; one genuine contrast is fine)": r"(?i)\brather than\b",
+            "point-announcing transition (watch)": r"(?i)here'?s what that means|that'?s (why|where|what|how)\b",
         },
     },
     "owner": {
