@@ -39,20 +39,34 @@ CLASSES = (
 )
 TASK_CAUSED = frozenset({TASK_SHAPE, TASK_EXECUTION})
 
-FAILED_OUTCOMES = frozenset({"timed_out", "crashed", "gave_up"})
+FAILED_OUTCOMES = frozenset({"timed_out", "crashed", "gave_up", "blocked", "reclaimed"})
 
-# Reviewer identities whose VERDICT lines count. The orchestrator profile
-# posts the fleet's second-witness verdicts; muse posts Jimmy's. A verdict
-# authored by the task's own worker never counts, whatever identity it
-# claims (enforced in _latest_reviewer_verdict).
-DEFAULT_REVIEWERS = frozenset({"orchestrator", "muse"})
+# Reviewer identities whose VERDICT lines count, normalized (see
+# _normalize_author): the orchestrator profile posts the fleet's
+# second-witness verdicts under its profile path; the jimmy family and
+# muse post Jimmy's reviews. A verdict authored by the task's own worker
+# never counts, whatever identity it claims (enforced in
+# _latest_reviewer_verdict).
+DEFAULT_REVIEWERS = frozenset(
+    {
+        "orchestrator",
+        "jimmy",
+        "jimmy-review",
+        "jimmy-review-sweep",
+        "jimmy-review-hook",
+        "jimmy-direct",
+        "muse",
+        "fleet-review-trigger",
+        "fleet-review-sweep",
+    }
+)
 
 # A final heartbeat gap longer than this before a crash points to a dead
 # or unreachable worker (infrastructure) rather than a live worker
 # failing at the task.
 HEARTBEAT_GAP_INFRA_SECONDS = 900
 
-_VERDICT_RE = re.compile(r"VERDICT[:\s]+(PASS|FAIL|CLEAN)\b", re.IGNORECASE)
+_VERDICT_RE = re.compile(r"VERDICT[:\s\u2014-]+(PASS|FAIL|CLEAN|INCOMPLETE)\b", re.IGNORECASE)
 
 # Infrastructure markers in a run's own record (metadata / error text).
 _INFRA_PATTERNS = tuple(
@@ -199,6 +213,16 @@ def _sorted_runs(runs: Iterable[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
     return sorted(runs, key=lambda r: (r.get("started_at") or 0, r.get("id") or 0))
 
 
+def _normalize_author(author: Any) -> str:
+    """Normalize a comment author to a bare identity: the board records
+    some authors as profile paths (e.g. '/home/ubuntu/.hermes/profiles/
+    orchestrator') and casing varies ('Jimmy')."""
+    text = str(author or "").strip().rstrip("/")
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    return text.lower()
+
+
 def _latest_reviewer_verdict(
     comments: Sequence[Mapping[str, Any]],
     worker_identities: Set[str],
@@ -206,14 +230,17 @@ def _latest_reviewer_verdict(
 ) -> Optional[str]:
     """Latest reviewer-authored verdict for a task: 'PASS', 'FAIL', or None.
 
-    VERDICT CLEAN counts as PASS. Comments by the task's own worker
+    VERDICT CLEAN counts as PASS; VERDICT INCOMPLETE counts as FAIL (the
+    deliverable did not earn a pass). Comments by the task's own worker
     identities never count, even if the author claims a reviewer name
     that is also the worker's own profile on this task.
     """
+    workers = {_normalize_author(w) for w in worker_identities}
+    reviewer_set = {_normalize_author(r) for r in reviewers}
     verdict: Optional[str] = None
     for cm in sorted(comments, key=lambda c: (c.get("created_at") or 0, c.get("id") or 0)):
-        author = (cm.get("author") or "").strip()
-        if author not in reviewers or author in worker_identities:
+        author = _normalize_author(cm.get("author"))
+        if author not in reviewer_set or author in workers:
             continue
         for m in _VERDICT_RE.finditer(cm.get("body") or ""):
             token = m.group(1).upper()
@@ -245,12 +272,12 @@ def is_failed_run(
     task_comments: Sequence[Mapping[str, Any]],
     reviewers: Set[str] = DEFAULT_REVIEWERS,
 ) -> bool:
-    """A run failed when its outcome is timed_out / crashed / gave_up, when
-    its task sits blocked with this run as the latest, or when it completed
-    but its deliverable earned a reviewer-authored FAIL verdict. A reclaimed
-    run on a task that later recovered is not itself a failure -- the
-    reclaim is an infrastructure event, counted in run statistics, not a
-    task failure."""
+    """A run failed when its outcome is timed_out / crashed / gave_up /
+    blocked / reclaimed, when its task sits blocked with this run as the
+    latest, or when it completed (or requested review) but its deliverable
+    earned a reviewer-authored FAIL verdict. A reclaimed run is a failed
+    run even when the task later recovered: the claim or worker died,
+    which is an infrastructure failure of that run."""
     outcome = run.get("outcome")
     if outcome in FAILED_OUTCOMES:
         return True
@@ -258,7 +285,7 @@ def is_failed_run(
     is_latest = bool(ordered) and ordered[-1].get("id") == run.get("id")
     if task.get("status") == "blocked" and is_latest and outcome != "completed":
         return True
-    if outcome == "completed":
+    if outcome in ("completed", "review_requested"):
         workers = {task.get("assignee"), run.get("profile")} - {None}
         return _latest_reviewer_verdict(task_comments, workers, reviewers) == "FAIL"
     return False
@@ -282,7 +309,7 @@ def classify_run(
     text = _run_text(run)
     ordered = _sorted_runs(task_runs)
     is_latest = bool(ordered) and ordered[-1].get("id") == run.get("id")
-    blocked_context = task.get("status") == "blocked" and is_latest
+    blocked_context = (task.get("status") == "blocked" and is_latest) or outcome == "blocked"
 
     # Blocked tasks: the task's own text is read FIRST. Only when it names
     # a wait on an outside reply, a credential, or a decision does the run
@@ -323,14 +350,25 @@ def classify_run(
             return INFRASTRUCTURE
         return TASK_EXECUTION
 
-    if outcome == "completed":
+    if outcome in ("completed", "review_requested"):
         # is_failed_run already established a reviewer FAIL verdict.
         return TASK_EXECUTION
 
     if outcome == "reclaimed":
-        # Reached only in a blocked context (see is_failed_run): the claim
-        # or worker died, which is an infrastructure event.
+        # The claim or worker died before the run could proceed: an
+        # infrastructure event, whatever the task did afterwards.
         return INFRASTRUCTURE
+
+    if outcome == "blocked":
+        # The external read already ran above. Remaining blocked runs:
+        # an infrastructure cause named in the record wins; a cap burn
+        # reads as task shape; anything else the record cannot support
+        # stays unclassified.
+        if _names_infra(text):
+            return INFRASTRUCTURE
+        if re.search(r"cap|timed out|exceeded", text, re.IGNORECASE):
+            return TASK_SHAPE
+        return UNCLASSIFIED
 
     if blocked_context:
         if _names_infra(text):
