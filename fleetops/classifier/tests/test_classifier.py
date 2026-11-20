@@ -174,6 +174,47 @@ def test_verdict_clean_counts_as_pass():
     assert result["rate"] == 100.0
 
 
+# --- live-board shapes found by the acceptance gate -------------------------
+
+def test_verdict_author_as_profile_path_counts():
+    t = task(status="done")
+    r = run(outcome="completed")
+    cm = comment(author="/home/ubuntu/.hermes/profiles/orchestrator",
+                 body="VERDICT PASS")
+    result = first_run_value_success([t], [r], [cm])
+    assert result["numerator"] == 1 and result["verdict_coverage"] == 100.0
+
+
+def test_verdict_incomplete_counts_as_not_pass():
+    t = task(status="done")
+    r = run(outcome="completed")
+    cm = comment(author="jimmy", body="VERDICT: INCOMPLETE — report unfinished.")
+    result = first_run_value_success([t], [r], [cm])
+    assert result["numerator"] == 0 and result["denominator"] == 1
+    assert classify_run(r, t, [r], [cm]) == TASK_EXECUTION
+
+
+def test_blocked_outcome_waiting_on_reply_is_external():
+    t = task(status="blocked")
+    r = run(outcome="blocked")
+    cm = comment(author="kai", body="Blocked: waiting for a reply from the vendor.")
+    assert classify_run(r, t, [r], [cm]) == EXTERNAL_DEPENDENCY
+
+
+def test_blocked_outcome_no_evidence_is_unclassified():
+    t = task(status="blocked")
+    r = run(outcome="blocked")
+    assert classify_run(r, t, [r], []) == UNCLASSIFIED
+
+
+def test_reclaimed_run_is_infrastructure_failure():
+    t = task(status="done")
+    r1 = run(outcome="reclaimed", rid=21, started_at=100)
+    r2 = run(outcome="completed", rid=22, started_at=200)
+    assert classify_run(r1, t, [r1, r2], []) == INFRASTRUCTURE
+    assert classify_run(r2, t, [r1, r2], []) is None
+
+
 # --- splits ------------------------------------------------------------------
 
 def test_classify_failures_splits_sum_and_first_runs():
