@@ -392,20 +392,34 @@ for brief in "${BRIEF_FILES[@]}"; do
   log "kanban-worker: task $tid has no .done after ${brief_age}s — treating as failed"
   $MWH "python3 << 'PYEOF'
 import sqlite3
-db = sqlite3.connect('$KANBAN_DB')
-row = db.execute('SELECT consecutive_failures FROM tasks WHERE id = ?', ('$tid',)).fetchone()
-fails = (row[0] or 0) + 1 if row else 1
-if fails >= 3:
-    db.execute(\"UPDATE tasks SET status='blocked', consecutive_failures=? WHERE id = ?\", (fails, '$tid'))
-    db.execute(\"INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'blocked', ?, strftime('%s','now'))\",
-               ('$tid', '{\"reason\": \"3 consecutive failures, escalated to Michael\"}'))
-    print(f'BLOCKED $tid after {fails} failures')
+db = sqlite3.connect('$KANBAN_DB', timeout=10)
+db.execute('BEGIN IMMEDIATE')
+row = db.execute('SELECT consecutive_failures, status FROM tasks WHERE id = ?', ('$tid',)).fetchone()
+if row is None:
+    print(f'SKIP $tid — task row vanished; no retry')
+elif row[1] != 'running':
+    # TOCTOU guard (t_2ab1d4e6): the bash pre-check above read status in a
+    # separate round-trip and only proved it was 'running' then. The worker
+    # may have completed the task in the gap — the Nov 22 incident
+    # (t_1fc8f6c7) shows a completed task demoted to todo and re-queued as
+    # 'retry 1' 1s after its 'completed' event. A completed task must stay
+    # completed: re-read the status inside this transaction (BEGIN IMMEDIATE
+    # holds the write lock, so the worker's commit cannot land between this
+    # read and the write) and only demote a task that is STILL running.
+    print(f'SKIP $tid — status is now {row[1]!r} at mutation time; not demoting')
 else:
-    db.execute(\"UPDATE tasks SET status='todo', consecutive_failures=? WHERE id = ?\", (fails, '$tid'))
-    db.execute(\"INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'created', ?, strftime('%s','now'))\",
-               ('$tid', '{\"reason\": \"retry %d\"}' % fails))
-    print(f'REQUEUED $tid for retry {fails}')
-db.commit()
+    fails = (row[0] or 0) + 1
+    if fails >= 3:
+        db.execute(\"UPDATE tasks SET status='blocked', consecutive_failures=? WHERE id = ? AND status = 'running'\", (fails, '$tid'))
+        db.execute(\"INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'blocked', ?, strftime('%s','now'))\",
+                   ('$tid', '{\"reason\": \"3 consecutive failures, escalated to Michael\"}'))
+        print(f'BLOCKED $tid after {fails} failures')
+    else:
+        db.execute(\"UPDATE tasks SET status='todo', consecutive_failures=? WHERE id = ? AND status = 'running'\", (fails, '$tid'))
+        db.execute(\"INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'created', ?, strftime('%s','now'))\",
+                   ('$tid', '{\"reason\": \"retry %d\"}' % fails))
+        print(f'REQUEUED $tid for retry {fails}')
+    db.commit()
 PYEOF" 2>/dev/null | grep -v "Warning:" | while read -r line; do log "kanban-worker: $line"; done
 
   # Remove the stale brief so it gets re-created on re-claim
