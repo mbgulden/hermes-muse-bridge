@@ -415,7 +415,12 @@ else:
                    ('$tid', '{\"reason\": \"3 consecutive failures, escalated to Michael\"}'))
         print(f'BLOCKED $tid after {fails} failures')
     else:
-        db.execute(\"UPDATE tasks SET status='todo', consecutive_failures=? WHERE id = ? AND status = 'running'\", (fails, '$tid'))
+        # BR-17: the retry flip clears the five task-row lock fields in the
+        # same step that re-queues. A flip that leaves claim_lock set
+        # re-creates the OKF-59 stuck shape: the claim CAS requires
+        # claim_lock IS NULL, so every later claim is refused forever.
+        # PR #5's in-txn status re-check (above) is preserved, not re-done.
+        db.execute(\"UPDATE tasks SET status='todo', consecutive_failures=?, claim_lock=NULL, claim_expires=NULL, current_run_id=NULL, worker_pid=NULL, last_heartbeat_at=NULL WHERE id = ? AND status = 'running'\", (fails, '$tid'))
         db.execute(\"INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'created', ?, strftime('%s','now'))\",
                    ('$tid', '{\"reason\": \"retry %d\"}' % fails))
         print(f'REQUEUED $tid for retry {fails}')
