@@ -24,6 +24,9 @@
 #                        files (<prefix>-task-<id>.md) (default: muse)
 #   BRIDGE_ASSIGNEE    — comma-separated kanban assignees to claim, no
 #                        spaces (default: muse)
+#   BRIDGE_RELEASE_COOLDOWN — seconds a driver-released task stays out of
+#                        the claim queue after its last 'reclaimed' run
+#                        (default: 300)
 #   BRIDGE_LEGACY_PREFIX — the pre-standard naming whose briefs are still
 #                        honored until they complete (default: jimmy;
 #                        set empty to disable the drain)
@@ -58,6 +61,15 @@ BOX_HOME="${BRIDGE_BOX_HOME:-/home/ubuntu/.hermes}"
 NAME_PREFIX="${BRIDGE_NAME_PREFIX:-muse}"
 ASSIGNEES="${BRIDGE_ASSIGNEE:-muse}"
 export BOX_HOME NAME_PREFIX ASSIGNEES
+
+# Release cooldown (t_926313bc): the claim loop used to re-claim a
+# driver-released task on the very next pass (77.8% of releases were
+# re-claimed within 120s, 69.6% within 30s — see
+# /home/ubuntu/work/bridge-claim-churn/measurement-2026-11-23.md). A task
+# released by the lane driver (last run outcome='reclaimed') is skipped by
+# the candidate query for this many seconds.
+RELEASE_COOLDOWN="${BRIDGE_RELEASE_COOLDOWN:-300}"
+export RELEASE_COOLDOWN
 
 # SSH command: override with BRIDGE_SSH_CMD, or local exec for localhost mode
 if [ "$TRANSPORT" = "localhost" ]; then
@@ -442,7 +454,7 @@ import sqlite3, json
 db = sqlite3.connect('$KANBAN_DB')
 db.row_factory = sqlite3.Row
 rows = []
-for r in db.execute(\\\"SELECT id, title, body, status, priority FROM tasks WHERE assignee IN ($ASSIGNEE_SQL) AND status IN ('todo', 'ready', 'review') AND NOT EXISTS (SELECT 1 FROM task_links tl JOIN tasks p ON p.id = tl.parent_id WHERE tl.child_id = tasks.id AND p.status != 'done') ORDER BY priority DESC, created_at ASC LIMIT 5\\\"):
+for r in db.execute(\\\"SELECT id, title, body, status, priority FROM tasks WHERE assignee IN ($ASSIGNEE_SQL) AND status IN ('todo', 'ready', 'review') AND NOT EXISTS (SELECT 1 FROM task_links tl JOIN tasks p ON p.id = tl.parent_id WHERE tl.child_id = tasks.id AND p.status != 'done') AND NOT EXISTS (SELECT 1 FROM task_runs tr WHERE tr.task_id = tasks.id AND tr.outcome = 'reclaimed' AND tr.ended_at IS NOT NULL AND tr.ended_at > strftime('%s','now') - $RELEASE_COOLDOWN ORDER BY tr.id DESC LIMIT 1) ORDER BY priority DESC, created_at ASC LIMIT 5\\\"):
     rows.append(dict(r))
 print(json.dumps(rows))
 \"" 2>/dev/null | grep -v "Warning:" | tail -1)
