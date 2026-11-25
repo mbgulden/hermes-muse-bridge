@@ -5,13 +5,14 @@ authored into tasks. The format is documented in BENCH.md next to this
 module; the parser here implements exactly what BENCH.md documents:
 
 - A level-2 heading (``## Title``) starts an entry.
-- Three field lines follow the heading, in any order:
-  ``Owner: <profile>``, ``Source: <paths or links>``, and
-  ``State: QUEUED`` or ``State: DONE``.
+- Two required field lines follow the heading, in any order:
+  ``Source: <paths or links>`` and ``State: QUEUED`` or
+  ``State: DONE``. The ``Owner: <profile>`` line is optional: an entry
+  without one parses as unassigned (``owner == UNASSIGNED``).
 - Blank lines and note lines inside an entry are ignored.
-- An entry missing a field line, repeating a field line, or carrying a
-  State other than QUEUED or DONE is a format error and raises
-  ValueError naming the file and the entry.
+- An entry missing a Source or State field line, repeating a field
+  line, or carrying a State other than QUEUED or DONE is a format
+  error and raises ValueError naming the file and the entry.
 
 Content before the first level-2 heading (for example a level-1 file
 title or an introduction) is not part of any entry and is skipped.
@@ -27,9 +28,14 @@ QUEUED = "QUEUED"
 DONE = "DONE"
 STATES = (QUEUED, DONE)
 
+# Owner is optional: an entry without an Owner: line parses as
+# unassigned. The sentinel is a string (not None) because
+# monitor.build_report folds owners into a sorted set of profile
+# names, where None would raise TypeError.
+UNASSIGNED = "unassigned"
+
 _HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
 _FIELD_RE = re.compile(r"^(Owner|Source|State):\s*(.*?)\s*$")
-_FIELDS = ("Owner", "Source", "State")
 
 
 @dataclass(frozen=True)
@@ -37,7 +43,7 @@ class BenchItem:
     """One bench entry: a work item waiting to be authored."""
 
     title: str
-    owner: str
+    owner: str  # UNASSIGNED when the entry has no Owner: line
     source: str
     state: str
     origin: str = ""
@@ -60,7 +66,9 @@ def parse_bench_text(text: str, origin: str = "<bench>") -> list[BenchItem]:
         if current is None:
             return
         title = current["title"]
-        for field in _FIELDS:
+        # Owner is optional: a missing Owner: line parses as UNASSIGNED
+        # instead of a format error. Source and State stay required.
+        for field in ("Source", "State"):
             if field not in current:
                 raise ValueError(
                     f"{origin}: bench entry {title!r} is missing its "
@@ -75,7 +83,7 @@ def parse_bench_text(text: str, origin: str = "<bench>") -> list[BenchItem]:
         items.append(
             BenchItem(
                 title=title,
-                owner=current["Owner"],
+                owner=current.get("Owner", UNASSIGNED),
                 source=current["Source"],
                 state=state,
                 origin=origin,

@@ -9,18 +9,22 @@ order); entries are listed in the order they should be authored.
 ## Entry shape
 
 Each entry is a level-2 markdown heading carrying the item title,
-followed by three field lines:
+followed by two required field lines and one optional field line:
 
-- `Owner: <profile>` — the worker profile the item is destined for.
 - `Source: <paths or links>` — the files or links the task author
   works from when turning the item into a task body.
 - `State: QUEUED` or `State: DONE` — QUEUED items are waiting; DONE
   items are written history and are never listed by the monitor.
+- `Owner: <profile>` — optional: the worker profile the item is
+  destined for. An entry without an `Owner:` line parses as
+  unassigned (`owner == "unassigned"`) and is never offered to any
+  profile by the monitor.
 
 Rules the parser enforces:
 
-- The three field lines are required; a missing or repeated field
-  line is a format error.
+- The Source and State field lines are required; a missing or repeated
+  field line (of any kind) is a format error. A missing Owner line is
+  not an error — it parses as unassigned.
 - State must be exactly `QUEUED` or `DONE`; anything else is a
   format error.
 - Blank lines and note lines inside an entry are ignored, so an
