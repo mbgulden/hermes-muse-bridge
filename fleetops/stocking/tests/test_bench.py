@@ -2,7 +2,12 @@
 
 import pytest
 
-from fleetops.stocking.bench import DONE, QUEUED, parse_bench_text
+from fleetops.stocking.bench import (
+    DONE,
+    QUEUED,
+    UNASSIGNED,
+    parse_bench_text,
+)
 
 from fixtures import BENCH_TEXT
 
@@ -50,9 +55,15 @@ def test_note_lines_inside_an_entry_are_ignored():
     assert item.state == QUEUED
 
 
-def test_missing_field_line_is_a_format_error():
+def test_missing_source_line_is_a_format_error():
     text = "## Broken item\nOwner: nova\nState: QUEUED\n"
     with pytest.raises(ValueError, match="Source"):
+        parse_bench_text(text)
+
+
+def test_missing_state_line_is_a_format_error():
+    text = "## Broken item\nOwner: nova\nSource: ~/workspace/x.md\n"
+    with pytest.raises(ValueError, match="State"):
         parse_bench_text(text)
 
 
@@ -82,3 +93,46 @@ def test_repeated_field_line_is_a_format_error():
 def test_empty_text_yields_no_items():
     assert parse_bench_text("") == []
     assert parse_bench_text("# Just a title\n") == []
+
+
+# --- The fix: an item without an Owner: line parses as unassigned ---------
+
+def test_missing_owner_line_parses_as_unassigned():
+    """An item that carries no Owner: line must still parse, as unassigned,
+    rather than being dropped as a format error."""
+    text = (
+        "## Un-owned item\n"
+        "Source: ~/workspace/seo/audit-plan.md\n"
+        "State: QUEUED\n"
+    )
+    (item,) = parse_bench_text(text, origin="fixture")
+    assert item.title == "Un-owned item"
+    assert item.owner == UNASSIGNED
+    assert item.source == "~/workspace/seo/audit-plan.md"
+    assert item.state == QUEUED
+    assert item.is_queued
+
+
+def test_owned_and_unowned_items_parse_identically_except_owner():
+    """Same item with and without an Owner: line yields the same item,
+    differing only in the owner field. The owned shape must parse
+    byte-identically to before the fix."""
+    owned = (
+        "## Shared item\n"
+        "Owner: nova\n"
+        "Source: ~/workspace/seo/audit-plan.md\n"
+        "State: QUEUED\n"
+    )
+    unowned = (
+        "## Shared item\n"
+        "Source: ~/workspace/seo/audit-plan.md\n"
+        "State: QUEUED\n"
+    )
+    (owned_item,) = parse_bench_text(owned, origin="fixture")
+    (unowned_item,) = parse_bench_text(unowned, origin="fixture")
+    assert owned_item.title == unowned_item.title
+    assert owned_item.source == unowned_item.source
+    assert owned_item.state == unowned_item.state
+    assert owned_item.origin == unowned_item.origin
+    assert owned_item.owner == "nova"
+    assert unowned_item.owner == UNASSIGNED
